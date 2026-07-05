@@ -6,6 +6,7 @@ description = "Global DNS propagation checker TUI — watch a DNS record propaga
 keywords = ["dns", "propagation", "tui", "terminal", "networking"]
 categories = ["command-line-utilities", "network-programming"]
 license = "MIT"
+homepage = "https://github.com/514-labs/dnsglobe"
 repository = "https://github.com/514-labs/dnsglobe"
 readme = "README.md"
 
@@ -20,3 +21,8 @@ tokio = { version = "1", features = ["full"] }
 [profile.release]
 lto = true
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

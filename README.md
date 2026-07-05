@@ -36,9 +36,17 @@ error, yellow in flight).
 
 ## Usage
 
-```sh
-cargo install dnsglobe              # or build from source with cargo build --release
+Install:
 
+```sh
+brew install 514-labs/tap/dnsglobe   # Homebrew (macOS/Linux)
+cargo install dnsglobe               # from crates.io
+# or grab a prebuilt binary from the GitHub Releases page
+```
+
+Run:
+
+```sh
 dnsglobe                            # start empty, type a domain
 dnsglobe example.com                # query immediately and watch
 dnsglobe --once example.com TXT    # no TUI: print results, exit (for scripts)
