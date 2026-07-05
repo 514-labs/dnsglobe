@@ -1,8 +1,13 @@
 # dnsglobe
 
+[![crates.io](https://img.shields.io/crates/v/dnsglobe)](https://crates.io/crates/dnsglobe)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **A global DNS propagation checker for your terminal** — a Rust TUI that
 queries 34 public DNS resolvers around the world in parallel, compares their
 answers, and shows the propagation of your record on a world map.
+
+![dnsglobe demo — checking A and NS records for a domain across 34 resolvers worldwide](demo/demo.gif)
 
 Think dnschecker.org / whatsmydns.net, but in your terminal, with watch mode:
 start a check and it re-polls until the record has propagated everywhere.
@@ -11,16 +16,6 @@ Resolvers span the global anycast networks (Google, Cloudflare, Quad9),
 North America, Europe, Russia, the Middle East, East Asia, and the southern
 hemisphere (Telstra AU, SafeSurfer NZ, UOL BR) — each queried directly, so
 you see every server's own current view of the record.
-
-```
-┌ 🌍 DNS Propagation Checker ───────────────────────────────┐
-│ Domain: example.com▏   Type: A  (Tab to cycle)            │
-└───────────────────────────────────────────────────────────┘
- propagation 19/20 (95%) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- Resolver           Loc     IP        Time   TTL  Status    Answer
- Google Public DNS  Anycast 8.8.8.8   52ms   300  ✓ OK      104.20.23.154, …
- Yandex DNS         RU      77.88.8.8 208ms  120  ≠ DIFFERS 8.47.69.0, …
-```
 
 Each resolver is queried directly (no cache, EDNS0, TCP fallback for
 truncated answers), so what you see is each server's own current view of the
