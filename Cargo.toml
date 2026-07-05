@@ -1,6 +1,6 @@
 [package]
 name = "dnsglobe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Global DNS propagation checker TUI — watch a DNS record propagate across 34 public resolvers worldwide, on a world map in your terminal"
 keywords = ["dns", "propagation", "tui", "terminal", "networking"]
