@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use hickory_resolver::proto::rr::RecordType;
 use tokio::sync::mpsc;
@@ -85,7 +85,22 @@ async fn main() -> Result<()> {
     }
 
     let terminal = ratatui::init();
+    // Ask for the kitty keyboard protocol where supported (iTerm2, kitty,
+    // Ghostty, WezTerm, ...): it's the only way terminals report Cmd (SUPER)
+    // and reliably distinguish Option-modified arrows for input navigation.
+    let enhanced_keys = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced_keys {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            event::PushKeyboardEnhancementFlags(
+                event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        );
+    }
     let result = run_tui(terminal, cli.domain.unwrap_or_default(), cli.record_type).await;
+    if enhanced_keys {
+        let _ = crossterm::execute!(std::io::stdout(), event::PopKeyboardEnhancementFlags);
+    }
     ratatui::restore();
     result
 }
@@ -203,10 +218,33 @@ fn handle_key(
         KeyCode::Enter => spawn_queries(app, tx),
         KeyCode::Tab => app.cycle_record_type(true),
         KeyCode::BackTab => app.cycle_record_type(false),
+        // Cmd+←/→ on macOS (reported as SUPER under the kitty keyboard
+        // protocol): jump to the start/end of the input, like Home/End.
+        KeyCode::Left if modifiers.contains(KeyModifiers::SUPER) => app.cursor = 0,
+        KeyCode::Right if modifiers.contains(KeyModifiers::SUPER) => {
+            app.cursor = app.domain.len();
+        }
+        // Option+←/→ on macOS (ALT), Ctrl+←/→ on Windows/Linux: move by one
+        // dot-separated label.
+        KeyCode::Left if modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) => {
+            app.move_cursor_word_left();
+        }
+        KeyCode::Right if modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) => {
+            app.move_cursor_word_right();
+        }
         KeyCode::Left => app.move_cursor_left(),
         KeyCode::Right => app.move_cursor_right(),
         KeyCode::Home => app.cursor = 0,
         KeyCode::End => app.cursor = app.domain.len(),
+        // Terminal.app (and iTerm2's default profile) send Esc-b / Esc-f for
+        // Option+←/→ — the readline word-motion sequences.
+        KeyCode::Char('b') if modifiers.contains(KeyModifiers::ALT) => app.move_cursor_word_left(),
+        KeyCode::Char('f') if modifiers.contains(KeyModifiers::ALT) => app.move_cursor_word_right(),
+        // Readline line motions, for terminals that don't forward Cmd at all.
+        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => app.cursor = 0,
+        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cursor = app.domain.len();
+        }
         KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
         KeyCode::Down => app.scroll += 1, // clamped during draw
         KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(10),
@@ -214,7 +252,8 @@ fn handle_key(
         KeyCode::Backspace => app.backspace(),
         KeyCode::Delete => app.delete(),
         KeyCode::Char(c)
-            if !modifiers.contains(KeyModifiers::CONTROL)
+            if !modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
                 && (c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) =>
         {
             app.insert_char(c.to_ascii_lowercase());

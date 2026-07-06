@@ -241,6 +241,30 @@ impl App {
         self.cursor = (self.cursor + 1).min(self.domain.len());
     }
 
+    /// Jump to the start of the current dot-separated label, or of the
+    /// previous one when already at a label boundary.
+    pub fn move_cursor_word_left(&mut self) {
+        let bytes = self.domain.as_bytes();
+        while self.cursor > 0 && bytes[self.cursor - 1] == b'.' {
+            self.cursor -= 1;
+        }
+        while self.cursor > 0 && bytes[self.cursor - 1] != b'.' {
+            self.cursor -= 1;
+        }
+    }
+
+    /// Jump past the end of the current dot-separated label, or of the next
+    /// one when already at a label boundary.
+    pub fn move_cursor_word_right(&mut self) {
+        let bytes = self.domain.as_bytes();
+        while self.cursor < bytes.len() && bytes[self.cursor] == b'.' {
+            self.cursor += 1;
+        }
+        while self.cursor < bytes.len() && bytes[self.cursor] != b'.' {
+            self.cursor += 1;
+        }
+    }
+
     pub fn clear_domain(&mut self) {
         self.domain.clear();
         self.cursor = 0;
@@ -681,6 +705,48 @@ mod tests {
             min_ttl,
             at: now - Duration::from_secs(ago),
         }
+    }
+
+    #[test]
+    fn word_left_jumps_to_label_starts() {
+        let mut app = App::new("api.example.com".into());
+        app.cursor = app.domain.len();
+        let stops: Vec<usize> = std::iter::from_fn(|| {
+            app.move_cursor_word_left();
+            Some(app.cursor)
+        })
+        .take(4)
+        .collect();
+        // "api.example.com": label starts at 12 ("com"), 4 ("example"),
+        // 0 ("api"), then stays put.
+        assert_eq!(stops, vec![12, 4, 0, 0]);
+    }
+
+    #[test]
+    fn word_right_jumps_to_label_ends() {
+        let mut app = App::new("api.example.com".into());
+        app.cursor = 0;
+        let stops: Vec<usize> = std::iter::from_fn(|| {
+            app.move_cursor_word_right();
+            Some(app.cursor)
+        })
+        .take(4)
+        .collect();
+        assert_eq!(stops, vec![3, 11, 15, 15]);
+    }
+
+    #[test]
+    fn word_motion_skips_consecutive_dots() {
+        let mut app = App::new("a..b".into());
+        app.cursor = 4;
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor, 3); // start of "b"
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor, 0); // past both dots to start of "a"
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor, 1); // end of "a"
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor, 4); // past both dots to end of "b"
     }
 
     #[test]

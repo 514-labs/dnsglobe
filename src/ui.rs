@@ -499,7 +499,7 @@ fn draw_footer(
         ));
     }
     let keys = Line::from(Span::styled(
-        " type to edit · ←/→ move cursor · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Tab record type · ↑/↓ scroll · Esc quit",
+        " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Tab record type · ↑/↓ scroll · Esc quit",
         Style::new().fg(Color::DarkGray),
     ));
     if let Some(advisory) = advisory {
