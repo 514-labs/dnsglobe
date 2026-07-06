@@ -164,6 +164,9 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
             summary.responding,
             ratio * 100.0
         );
+        if summary.servfail > 0 {
+            label.push_str(&format!(" · {} servfail", summary.servfail));
+        }
         if summary.errors > 0 {
             label.push_str(&format!(" · {} unreachable", summary.errors));
         }
@@ -294,6 +297,19 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                             Cell::from(Span::styled("∅ NONE", Style::new().fg(Color::Red).bold())),
                             Cell::from(Span::styled(code.clone(), Style::new().fg(Color::Red))),
                         ),
+                        QueryResult::ServFail => (
+                            time,
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(Span::styled(
+                                "✗ SERVFAIL",
+                                Style::new().fg(Color::Red).bold(),
+                            )),
+                            Cell::from(Span::styled(
+                                "can't resolve — broken delegation or DNSSEC?",
+                                Style::new().fg(Color::Red),
+                            )),
+                        ),
                         QueryResult::Error(message) => (
                             time,
                             Cell::from(""),
@@ -406,7 +422,9 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                                 }
                             }
                         }
-                        QueryResult::NoRecords(_) | QueryResult::Error(_) => Color::Red,
+                        QueryResult::NoRecords(_)
+                        | QueryResult::ServFail
+                        | QueryResult::Error(_) => Color::Red,
                     },
                 };
                 ctx.print(lon, lat, Span::styled("●", Style::new().fg(color).bold()));
@@ -481,6 +499,11 @@ fn draw_footer(
         status.push_span(Span::raw(" · "));
         status.push_span(Span::styled(
             format!("{} none", summary.no_records),
+            Style::new().fg(Color::Red),
+        ));
+        status.push_span(Span::raw(" · "));
+        status.push_span(Span::styled(
+            format!("{} servfail", summary.servfail),
             Style::new().fg(Color::Red),
         ));
         status.push_span(Span::raw(" · "));

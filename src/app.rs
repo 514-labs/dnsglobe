@@ -125,10 +125,13 @@ pub struct Summary {
     pub done: usize,
     pub ok: usize,
     pub no_records: usize,
+    pub servfail: usize,
     pub errors: usize,
-    /// Resolvers that gave a usable answer (records or an authoritative
-    /// "no records"). Timeouts and refusals say nothing about propagation,
-    /// so percentages are computed against this, not the full list.
+    /// Resolvers that gave a usable answer (records, an authoritative
+    /// "no records", or a SERVFAIL — the resolver's view of the domain is
+    /// "broken", a real state during an NS migration). Timeouts and refusals
+    /// say nothing about propagation, so percentages are computed against
+    /// this, not the full list.
     pub responding: usize,
     /// Distinct answer *groups*. Answers sharing any record are grouped
     /// together, so round-robin subsets of one pool count as a single group
@@ -444,15 +447,16 @@ impl App {
                 let now = Instant::now();
                 order.sort_by_key(|&i| match &self.rows[i] {
                     RowState::Done { result, .. } => match result {
-                        QueryResult::Records { .. } if in_flight || summary.majority_rows[i] => 4,
+                        QueryResult::Records { .. } if in_flight || summary.majority_rows[i] => 5,
                         // Misbehaving caches are the most actionable rows.
                         QueryResult::Records { .. } if self.ttl_verdict(i, now).is_some() => 0,
                         QueryResult::Records { .. } => 1, // differs
                         QueryResult::NoRecords(_) => 2,
-                        QueryResult::Error(_) => 3,
+                        QueryResult::ServFail => 3,
+                        QueryResult::Error(_) => 4,
                     },
-                    RowState::Pending => 5,
-                    RowState::Idle => 6,
+                    RowState::Pending => 6,
+                    RowState::Idle => 7,
                 });
             }
             SortMode::Answer => order.sort_by(|&a, &b| {
@@ -519,10 +523,11 @@ impl App {
                     }
                 }
                 QueryResult::NoRecords(_) => summary.no_records += 1,
+                QueryResult::ServFail => summary.servfail += 1,
                 QueryResult::Error(_) => summary.errors += 1,
             }
         }
-        summary.responding = summary.ok + summary.no_records;
+        summary.responding = summary.ok + summary.no_records + summary.servfail;
 
         let mut counts: HashMap<usize, usize> = HashMap::new();
         for &i in &ok_rows {
@@ -891,6 +896,44 @@ mod tests {
         let app = app_with_answers(&[&["x"], &["x"]]);
         let summary = app.summary();
         assert_eq!(app.stale_expiry_bound(&summary, Instant::now()), None);
+    }
+
+    #[test]
+    fn servfail_counts_as_responding_and_blocks_full_propagation() {
+        // A resolver stuck on a delegation whose nameservers were deleted
+        // answers SERVFAIL: that's "not propagated here", not noise — it must
+        // hold the percentage below 100% and keep watch mode polling.
+        let mut app = app_with_answers(&[&["x"], &["x"]]);
+        app.rows.push(RowState::Done {
+            result: QueryResult::ServFail,
+            elapsed: Duration::from_millis(20),
+            at: Instant::now(),
+        });
+        let s = app.summary();
+        assert_eq!(s.servfail, 1);
+        assert_eq!(s.errors, 0);
+        assert_eq!(s.responding, 3);
+        assert_eq!(s.agree, 2);
+        assert!(s.agree < s.responding);
+    }
+
+    #[test]
+    fn status_sort_ranks_servfail_between_no_records_and_errors() {
+        let mut app = app_with_answers(&[&["x"]]);
+        for result in [
+            QueryResult::Error("timeout".into()),
+            QueryResult::ServFail,
+            QueryResult::NoRecords("NXDOMAIN".into()),
+        ] {
+            app.rows.push(RowState::Done {
+                result,
+                elapsed: Duration::from_millis(20),
+                at: Instant::now(),
+            });
+        }
+        app.sort = SortMode::Status;
+        let summary = app.summary();
+        assert_eq!(app.display_order(&summary), vec![3, 2, 1, 0]);
     }
 
     #[test]

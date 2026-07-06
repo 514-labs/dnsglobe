@@ -19,9 +19,15 @@ pub enum QueryResult {
     /// signal — the server's view is "nothing there" — so it counts toward
     /// the responding total.
     NoRecords(String),
+    /// SERVFAIL: the resolver tried to resolve this name and could not —
+    /// typically a delegation pointing at dead nameservers (mid-NS-migration
+    /// with the old servers gone) or a DNSSEC validation failure. Unlike
+    /// REFUSED or a timeout this is a statement about the *domain*, so it
+    /// counts toward the responding total and blocks 100% propagation.
+    ServFail,
     /// No usable answer: timeout, network error, or the server refused to
-    /// serve us (REFUSED/SERVFAIL). Says nothing about propagation, so these
-    /// are excluded from the percentage.
+    /// serve us (REFUSED). Says nothing about propagation, so these are
+    /// excluded from the percentage.
     Error(String),
 }
 
@@ -79,11 +85,14 @@ pub async fn query(server: IpAddr, domain: String, rtype: RecordType) -> (QueryR
         Err(_) => QueryResult::Error("timeout".into()),
         Ok(Err(err)) => match err {
             NetError::Timeout => QueryResult::Error("timeout".into()),
-            // "Won't serve you" / "couldn't resolve" — not a statement about
-            // whether the record exists.
+            // "Won't serve you" — a policy about us as a client, not a
+            // statement about whether the record exists.
             NetError::Dns(DnsError::ResponseCode(ResponseCode::Refused)) => {
                 QueryResult::Error("refused".into())
             }
+            // hickory's error drops the EDE detail (e.g. "no reachable
+            // authority"), so the classification is all we get.
+            NetError::Dns(DnsError::ResponseCode(ResponseCode::ServFail)) => QueryResult::ServFail,
             NetError::Dns(DnsError::ResponseCode(code)) => QueryResult::Error(code.to_string()),
             NetError::Dns(DnsError::NoRecordsFound(no_records)) => {
                 QueryResult::NoRecords(no_records.response_code.to_string())

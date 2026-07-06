@@ -158,7 +158,9 @@ async fn run_tui(
                 if !app.in_flight() {
                     // Round complete: stop watching once every responding
                     // resolver agrees (refused/unreachable ones carry no
-                    // propagation signal), otherwise schedule the next poll.
+                    // propagation signal; SERVFAIL counts as responding, so
+                    // a broken delegation keeps the watch alive), otherwise
+                    // schedule the next poll.
                     let summary = app.summary();
                     if summary.responding > 0 && summary.agree == summary.responding {
                         app.auto_refresh = false;
@@ -383,6 +385,12 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
                 dns::QueryResult::NoRecords(code) => {
                     format!("NONE    {:>5}ms  {code}", elapsed.as_millis())
                 }
+                dns::QueryResult::ServFail => {
+                    format!(
+                        "FAIL    {:>5}ms  SERVFAIL (can't resolve — broken delegation or DNSSEC?)",
+                        elapsed.as_millis()
+                    )
+                }
                 dns::QueryResult::Error(err) => {
                     format!("ERR     {:>5}ms  {err}", elapsed.as_millis())
                 }
@@ -402,8 +410,8 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
     }
 
     println!(
-        "\n{} of {} responding · {} unreachable · {} answer group(s)",
-        summary.ok, summary.responding, summary.errors, summary.groups
+        "\n{} of {} responding · {} servfail · {} unreachable · {} answer group(s)",
+        summary.ok, summary.responding, summary.servfail, summary.errors, summary.groups
     );
     if summary.agree > 0 {
         println!(

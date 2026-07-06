@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- SERVFAIL answers now count as a propagation signal instead of being
+  discarded as unreachable. A resolver answering SERVFAIL is saying "I tried
+  to resolve this name and could not" — the exact state of a resolver stuck
+  on a delegation whose old nameservers were deleted mid-NS-migration (or a
+  DNSSEC validation failure). Such resolvers now hold the propagation
+  percentage below 100% and keep watch mode polling; they show as
+  `✗ SERVFAIL` in the table (`FAIL` in `--once` output) with their own
+  footer count. Previously they were lumped in with timeouts/refusals, so a
+  broken delegation could report as fully propagated.
+  ([#21](https://github.com/514-labs/dnsglobe/pull/21))
+
 ## [0.3.0] - 2026-07-06
 
 ### Added
