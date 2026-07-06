@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -5,14 +7,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Map, MapResolution};
 use ratatui::widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, TableState};
 
-use crate::app::{App, RECORD_TYPES, RowState, SPINNER, Summary};
+use crate::app::{
+    ADVISORY_TTL, App, RECORD_TYPES, RowState, SPINNER, Summary, TtlVerdict, fmt_secs,
+};
 use crate::dns::QueryResult;
 use crate::resolvers;
 
 const ACCENT: Color = Color::Cyan;
-/// Table needs ~93 cols; only show the map when there's room for both.
-const MIN_WIDTH_FOR_MAP: u16 = 150;
-const TABLE_WIDTH: u16 = 96;
+/// Table needs ~102 cols; only show the map when there's room for both.
+const MIN_WIDTH_FOR_MAP: u16 = 156;
+const TABLE_WIDTH: u16 = 102;
+/// Dot/status color for a cache serving an answer past its own TTL.
+const STALE_COLOR: Color = Color::LightRed;
+/// Dot/status color for "refetched but upstream still serves the old data".
+const UPSTREAM_COLOR: Color = Color::LightBlue;
 const MAP_MAX_WIDTH: u16 = 170;
 /// Map bounds: lon −170..180, lat −55..72 (poles cropped).
 const MAP_LON_SPAN: f64 = 350.0;
@@ -29,10 +37,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // flagging outliers mid-flight makes rows flap as the majority shifts.
     let complete = summary.done > 0 && !app.in_flight();
 
+    let advisory = ttl_advisory(app, &summary, complete);
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(6),
-        Constraint::Length(2),
+        Constraint::Length(if advisory.is_some() { 3 } else { 2 }),
     ])
     .areas(frame.area());
 
@@ -66,7 +75,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_map(frame, app, &summary, complete, map_area);
         draw_map_info(frame, app, &summary, complete, info_area);
     }
-    draw_footer(frame, app, &summary, footer);
+    draw_footer(frame, app, &summary, advisory, footer);
+}
+
+/// One-line "lower your TTL before migrating" hint, shown once a round has
+/// settled with full agreement (the planning phase — mid-migration the advice
+/// comes too late) and the zone's TTL is long.
+fn ttl_advisory(app: &App, summary: &Summary, complete: bool) -> Option<String> {
+    if !complete || summary.responding == 0 || summary.agree != summary.responding {
+        return None;
+    }
+    let est = app.estimated_ttl(summary)?;
+    (est >= ADVISORY_TTL).then(|| {
+        format!(
+            "TTL ≈ {} — planning a record change? Lower the TTL first, then wait one old-TTL period before switching.",
+            fmt_secs(u64::from(est))
+        )
+    })
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -142,6 +167,16 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         if summary.errors > 0 {
             label.push_str(&format!(" · {} unreachable", summary.errors));
         }
+        // Worst case, every disagreeing cache must refetch within this — the
+        // number the whole watch is really about.
+        if summary.agree < summary.responding
+            && let Some(bound) = app.stale_expiry_bound(summary, Instant::now())
+        {
+            label.push_str(&format!(
+                " · old answers expire in ≤ {}",
+                fmt_secs(bound.as_secs())
+            ));
+        }
         if summary.responding > 0 && summary.agree == summary.responding {
             label.push_str(" · complete ");
         } else if let Some(at) = app.next_poll {
@@ -164,17 +199,21 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
 }
 
 fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, area: Rect) {
-    let header = Row::new(["Resolver", "Loc", "IP", "Time", "TTL", "Status", "Answer"])
-        .style(Style::new().fg(ACCENT).bold());
+    let header = Row::new([
+        "Resolver", "Loc", "IP", "Time", "TTL", "Exp", "Status", "Answer",
+    ])
+    .style(Style::new().fg(ACCENT).bold());
+    let now = Instant::now();
 
     let rows = app
         .display_order(summary)
         .into_iter()
         .map(|i| (i, (&resolvers::active()[i], &app.rows[i])))
         .map(|(i, (resolver, state))| {
-            let (time_cell, ttl_cell, status_cell, answer_cell) = match state {
+            let (time_cell, ttl_cell, exp_cell, status_cell, answer_cell) = match state {
                 RowState::Idle => (
                     Cell::from("—"),
+                    Cell::from(""),
                     Cell::from(""),
                     Cell::from(Span::styled("idle", Style::new().fg(Color::DarkGray))),
                     Cell::from(""),
@@ -182,13 +221,16 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                 RowState::Pending => (
                     Cell::from("…"),
                     Cell::from(""),
+                    Cell::from(""),
                     Cell::from(Span::styled(
                         format!("{} query", SPINNER[app.spinner_frame % SPINNER.len()]),
                         Style::new().fg(Color::Yellow),
                     )),
                     Cell::from(""),
                 ),
-                RowState::Done { result, elapsed } => {
+                RowState::Done {
+                    result, elapsed, ..
+                } => {
                     let ms = elapsed.as_millis();
                     let time_style = if ms < 100 {
                         Style::new().fg(Color::Green)
@@ -201,21 +243,46 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                     match result {
                         QueryResult::Records { values, min_ttl } => {
                             let matches_majority = !complete || summary.majority_rows[i];
-                            let (status, style) = if matches_majority {
-                                ("✓ OK", Style::new().fg(Color::Green).bold())
+                            let verdict = if matches_majority {
+                                None
                             } else {
-                                ("≠ DIFFERS", Style::new().fg(Color::Magenta).bold())
+                                app.ttl_verdict(i, now)
+                            };
+                            let (status, style) = match verdict {
+                                Some(TtlVerdict::PastTtl) => {
+                                    ("! PAST TTL", Style::new().fg(STALE_COLOR).bold())
+                                }
+                                Some(TtlVerdict::Upstream) => {
+                                    ("↻ UPSTREAM", Style::new().fg(UPSTREAM_COLOR).bold())
+                                }
+                                None if matches_majority => {
+                                    ("✓ OK", Style::new().fg(Color::Green).bold())
+                                }
+                                None => ("≠ DIFFERS", Style::new().fg(Color::Magenta).bold()),
+                            };
+                            // Live countdown to the moment this cache entry
+                            // must be refetched. For disagreeing rows this is
+                            // "how much longer the old answer can survive
+                            // here", so it carries the status color.
+                            let remaining = state.remaining_ttl(now).unwrap_or_default().as_secs();
+                            let exp = if remaining == 0 {
+                                Span::styled("expired", Style::new().fg(Color::DarkGray).italic())
+                            } else if matches_majority {
+                                Span::styled(fmt_secs(remaining), Style::new().fg(Color::DarkGray))
+                            } else {
+                                Span::styled(fmt_secs(remaining), style)
                             };
                             (
                                 time,
                                 Cell::from(format!("{min_ttl}")),
+                                Cell::from(exp),
                                 Cell::from(Span::styled(status, style)),
                                 Cell::from(Span::styled(
                                     values.join(", "),
                                     if matches_majority {
                                         Style::new()
                                     } else {
-                                        Style::new().fg(Color::Magenta)
+                                        Style::new().fg(style.fg.unwrap_or(Color::Magenta))
                                     },
                                 )),
                             )
@@ -223,11 +290,13 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                         QueryResult::NoRecords(code) => (
                             time,
                             Cell::from(""),
+                            Cell::from(""),
                             Cell::from(Span::styled("∅ NONE", Style::new().fg(Color::Red).bold())),
                             Cell::from(Span::styled(code.clone(), Style::new().fg(Color::Red))),
                         ),
                         QueryResult::Error(message) => (
                             time,
+                            Cell::from(""),
                             Cell::from(""),
                             Cell::from(Span::styled("✗ ERR", Style::new().fg(Color::Red).bold())),
                             Cell::from(Span::styled(
@@ -250,6 +319,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                 )),
                 time_cell,
                 ttl_cell,
+                exp_cell,
                 status_cell,
                 answer_cell,
             ])
@@ -263,7 +333,8 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
             Constraint::Length(15),
             Constraint::Length(7),
             Constraint::Length(6),
-            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Length(10),
             Constraint::Min(20),
         ],
     )
@@ -304,6 +375,7 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                 color: Color::DarkGray,
                 resolution: MapResolution::High,
             });
+            let now = Instant::now();
             for (i, (resolver, state)) in resolvers::active().iter().zip(&app.rows).enumerate() {
                 let Some((lat, lon)) = resolver.coords else {
                     continue; // config resolver without map coordinates
@@ -316,7 +388,11 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                             if !complete || summary.majority_rows[i] {
                                 Color::Green
                             } else {
-                                Color::Magenta
+                                match app.ttl_verdict(i, now) {
+                                    Some(TtlVerdict::PastTtl) => STALE_COLOR,
+                                    Some(TtlVerdict::Upstream) => UPSTREAM_COLOR,
+                                    None => Color::Magenta,
+                                }
                             }
                         }
                         QueryResult::NoRecords(_) | QueryResult::Error(_) => Color::Red,
@@ -335,6 +411,8 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
     let mut lines = vec![Line::from(vec![
         Span::styled("● agrees  ", Style::new().fg(Color::Green)),
         Span::styled("● differs  ", Style::new().fg(Color::Magenta)),
+        Span::styled("● past-ttl  ", Style::new().fg(STALE_COLOR)),
+        Span::styled("● upstream  ", Style::new().fg(UPSTREAM_COLOR)),
         Span::styled("● error  ", Style::new().fg(Color::Red)),
         Span::styled("● pending", Style::new().fg(Color::Yellow)),
     ])];
@@ -372,7 +450,13 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
     );
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
+fn draw_footer(
+    frame: &mut Frame,
+    app: &App,
+    summary: &Summary,
+    advisory: Option<String>,
+    area: Rect,
+) {
     let mut status = Line::default();
     if let Some((domain, rtype)) = &app.queried {
         status.push_span(Span::styled(
@@ -407,8 +491,24 @@ fn draw_footer(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         " type to edit · ←/→ move cursor · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Tab record type · ↑/↓ scroll · Esc quit",
         Style::new().fg(Color::DarkGray),
     ));
-    let [status_area, keys_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
-    frame.render_widget(Paragraph::new(status), status_area);
-    frame.render_widget(Paragraph::new(keys), keys_area);
+    if let Some(advisory) = advisory {
+        let advisory_line = Line::from(vec![
+            Span::styled(" ℹ ", Style::new().fg(ACCENT)),
+            Span::styled(advisory, Style::new().fg(Color::DarkGray).italic()),
+        ]);
+        let [advisory_area, status_area, keys_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        frame.render_widget(Paragraph::new(advisory_line), advisory_area);
+        frame.render_widget(Paragraph::new(status), status_area);
+        frame.render_widget(Paragraph::new(keys), keys_area);
+    } else {
+        let [status_area, keys_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+        frame.render_widget(Paragraph::new(status), status_area);
+        frame.render_widget(Paragraph::new(keys), keys_area);
+    }
 }

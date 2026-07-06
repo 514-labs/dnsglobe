@@ -14,12 +14,8 @@ use futures::StreamExt;
 use hickory_resolver::proto::rr::RecordType;
 use tokio::sync::mpsc;
 
-use app::App;
+use app::{App, POLL_INTERVAL};
 use dns::QueryOutcome;
-
-/// Watch-mode re-poll interval; propagation usually moves on TTL boundaries,
-/// so sub-minute polling is plenty.
-const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -187,12 +183,12 @@ fn poll_query(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
 
 fn spawn_round(
     tx: &mpsc::UnboundedSender<QueryOutcome>,
-    (domain, rtype, generation): (String, RecordType, u64),
+    (domain, rtype, generation, indices): (String, RecordType, u64, Vec<usize>),
 ) {
-    for (resolver_index, resolver) in resolvers::active().iter().enumerate() {
+    for resolver_index in indices {
         let tx = tx.clone();
         let domain = domain.clone();
-        let server: IpAddr = resolver.ip;
+        let server: IpAddr = resolvers::active()[resolver_index].ip;
         tokio::spawn(async move {
             let (result, elapsed) = dns::query(server, domain, rtype).await;
             let _ = tx.send(QueryOutcome {
@@ -212,14 +208,14 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
         .iter()
         .position(|t| *t == rtype)
         .unwrap_or(0);
-    let (domain, rtype, generation) = app
+    let (domain, rtype, generation, indices) = app
         .begin_query()
         .ok_or_else(|| anyhow::anyhow!("empty domain"))?;
 
     let mut tasks = tokio::task::JoinSet::new();
-    for (resolver_index, resolver) in resolvers::active().iter().enumerate() {
+    for resolver_index in indices {
         let domain = domain.clone();
-        let server: IpAddr = resolver.ip;
+        let server: IpAddr = resolvers::active()[resolver_index].ip;
         tasks.spawn(async move {
             let (result, elapsed) = dns::query(server, domain, rtype).await;
             QueryOutcome {
@@ -238,7 +234,9 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
     println!("{domain} {rtype}\n");
     for (i, (resolver, row)) in resolvers::active().iter().zip(&app.rows).enumerate() {
         let line = match row {
-            app::RowState::Done { result, elapsed } => match result {
+            app::RowState::Done {
+                result, elapsed, ..
+            } => match result {
                 dns::QueryResult::Records { values, min_ttl } => {
                     let status = if summary.majority_rows[i] {
                         "OK     "
@@ -277,6 +275,16 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
             summary.agree,
             summary.responding,
             summary.majority_values.join(", ")
+        );
+    }
+    if summary.responding > 0
+        && summary.agree == summary.responding
+        && let Some(est) = app.estimated_ttl(&summary)
+        && est >= app::ADVISORY_TTL
+    {
+        println!(
+            "note: TTL ≈ {} — planning a record change? lower the TTL first, then wait one old-TTL period before switching.",
+            app::fmt_secs(u64::from(est))
         );
     }
     Ok(())

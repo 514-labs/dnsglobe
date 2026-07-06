@@ -1,10 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use hickory_resolver::proto::rr::RecordType;
 
 use crate::dns::{QueryOutcome, QueryResult};
 use crate::resolvers;
+
+/// Watch-mode re-poll interval; propagation usually moves on TTL boundaries,
+/// so sub-minute polling is plenty.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Slack added on top of a reported TTL before calling a cache stale: we only
+/// sample once per POLL_INTERVAL, so an answer can be up to one interval old,
+/// plus a little headroom for clock skew and in-flight time.
+const TTL_GRACE: Duration = Duration::from_secs(POLL_INTERVAL.as_secs() + 5);
+
+/// Watch-mode observations kept per resolver, oldest dropped first.
+const HISTORY_CAP: usize = 32;
+
+/// TTL at or above which the footer suggests lowering it before a planned
+/// record change (the "drop TTL to 30s a day before migrating" practice).
+pub const ADVISORY_TTL: u32 = 3600;
 
 pub const RECORD_TYPES: &[RecordType] = &[
     RecordType::A,
@@ -60,7 +76,47 @@ pub enum RowState {
     Done {
         result: QueryResult,
         elapsed: Duration,
+        /// When the answer arrived; anchors the cache-expiry countdown.
+        at: Instant,
     },
+}
+
+impl RowState {
+    /// Time left before this row's reported TTL says the cache entry must be
+    /// refetched. None for rows without records.
+    pub fn remaining_ttl(&self, now: Instant) -> Option<Duration> {
+        let RowState::Done {
+            result: QueryResult::Records { min_ttl, .. },
+            at,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let ttl = Duration::from_secs(u64::from(*min_ttl));
+        Some(ttl.saturating_sub(now.saturating_duration_since(*at)))
+    }
+}
+
+/// One watch-mode answer from a resolver, kept to judge cache behavior over
+/// successive polls.
+#[derive(Debug, Clone)]
+struct Observation {
+    values: Vec<String>,
+    min_ttl: u32,
+    at: Instant,
+}
+
+/// Why a resolver is still serving a non-majority answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtlVerdict {
+    /// The answer outlived the TTL the resolver itself reported: the cache is
+    /// serving stale data (a resolver that ignores TTLs).
+    PastTtl,
+    /// The TTL jumped back up while the answer stayed the same: the resolver
+    /// did refetch, and *upstream* (e.g. a lagging secondary authoritative
+    /// server) still handed out the old data.
+    Upstream,
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +161,10 @@ pub struct App {
     pub next_poll: Option<Instant>,
     /// Active table ordering, cycled with Ctrl+S.
     pub sort: SortMode,
+    /// Per-resolver answers across watch-mode polls (bounded FIFO). Cleared
+    /// on a fresh query, preserved across re-polls — cache-behavior verdicts
+    /// only exist while watching one domain/type.
+    history: Vec<VecDeque<Observation>>,
 }
 
 impl App {
@@ -122,6 +182,7 @@ impl App {
             auto_refresh: false,
             next_poll: None,
             sort: SortMode::default(),
+            history: vec![VecDeque::new(); resolvers::active().len()],
         }
     }
 
@@ -169,36 +230,146 @@ impl App {
         };
     }
 
-    /// Arm a new query round. Returns what to query, or None if the domain
-    /// input is empty.
-    pub fn begin_query(&mut self) -> Option<(String, RecordType, u64)> {
+    /// Arm a new query round. Returns what to query (all resolvers), or None
+    /// if the domain input is empty.
+    pub fn begin_query(&mut self) -> Option<(String, RecordType, u64, Vec<usize>)> {
         let domain = self.domain.trim().trim_end_matches('.').to_string();
         if domain.is_empty() {
             return None;
         }
         self.generation += 1;
         self.rows = vec![RowState::Pending; resolvers::active().len()];
+        self.history = vec![VecDeque::new(); resolvers::active().len()];
         self.queried = Some((domain.clone(), self.record_type()));
-        Some((domain, self.record_type(), self.generation))
+        let all = (0..self.rows.len()).collect();
+        Some((domain, self.record_type(), self.generation, all))
     }
 
     /// Arm a poll of the last-queried domain/type, ignoring the (possibly
-    /// mid-edit) input field.
-    pub fn begin_requery(&mut self) -> Option<(String, RecordType, u64)> {
+    /// mid-edit) input field. Only re-polls rows whose answer can have
+    /// changed: rows agreeing with the majority are skipped while their TTL
+    /// countdown still runs (a cache can't legally change before expiry), and
+    /// picked up again once it hits zero — so an old-value *majority* still
+    /// gets re-checked and can flip.
+    pub fn begin_requery(&mut self) -> Option<(String, RecordType, u64, Vec<usize>)> {
         let (domain, rtype) = self.queried.clone()?;
+        let summary = self.summary();
+        let now = Instant::now();
+        let indices: Vec<usize> = (0..self.rows.len())
+            .filter(|&i| {
+                let agreeing = matches!(
+                    &self.rows[i],
+                    RowState::Done {
+                        result: QueryResult::Records { .. },
+                        ..
+                    }
+                ) && summary.majority_rows[i];
+                !(agreeing
+                    && self.rows[i]
+                        .remaining_ttl(now)
+                        .is_some_and(|r| !r.is_zero()))
+            })
+            .collect();
+        if indices.is_empty() {
+            return None;
+        }
         self.generation += 1;
-        self.rows = vec![RowState::Pending; resolvers::active().len()];
-        Some((domain, rtype, self.generation))
+        for &i in &indices {
+            self.rows[i] = RowState::Pending;
+        }
+        Some((domain, rtype, self.generation, indices))
     }
 
     pub fn apply(&mut self, outcome: QueryOutcome) {
         if outcome.generation != self.generation {
             return; // stale result from a superseded query round
         }
+        let now = Instant::now();
+        if let QueryResult::Records { values, min_ttl } = &outcome.result {
+            let history = &mut self.history[outcome.resolver_index];
+            if history.len() == HISTORY_CAP {
+                history.pop_front();
+            }
+            history.push_back(Observation {
+                values: values.clone(),
+                min_ttl: *min_ttl,
+                at: now,
+            });
+        }
         self.rows[outcome.resolver_index] = RowState::Done {
             result: outcome.result,
             elapsed: outcome.elapsed,
+            at: now,
         };
+    }
+
+    /// Judge a resolver's cache behavior from its answer history. Only
+    /// meaningful for rows currently *disagreeing* with the majority — the
+    /// caller filters; the same patterns on an agreeing row are normal
+    /// operation.
+    pub fn ttl_verdict(&self, index: usize, now: Instant) -> Option<TtlVerdict> {
+        let history = &self.history[index];
+        let latest = history.back()?;
+        // Tail streak of identical answers; one sample proves nothing.
+        let streak = history
+            .iter()
+            .rev()
+            .take_while(|o| o.values == latest.values)
+            .count();
+        if streak < 2 {
+            return None;
+        }
+        let first = &history[history.len() - streak];
+        // TTL rising within the streak means the resolver refetched and got
+        // the same old data back: the lag is upstream, not this cache.
+        let mut prev_ttl = first.min_ttl;
+        for obs in history.iter().skip(history.len() - streak + 1) {
+            if obs.min_ttl > prev_ttl {
+                return Some(TtlVerdict::Upstream);
+            }
+            prev_ttl = obs.min_ttl;
+        }
+        let deadline = first.at + Duration::from_secs(u64::from(first.min_ttl)) + TTL_GRACE;
+        (now > deadline).then_some(TtlVerdict::PastTtl)
+    }
+
+    /// Estimated configured TTL: the max reported TTL across majority rows.
+    /// A resolver that just refetched reports (nearly) the full configured
+    /// value, so the max over the fleet is within seconds of the zone's TTL.
+    pub fn estimated_ttl(&self, summary: &Summary) -> Option<u32> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| summary.majority_rows[i])
+            .filter_map(|(_, row)| match row {
+                RowState::Done {
+                    result: QueryResult::Records { min_ttl, .. },
+                    ..
+                } => Some(*min_ttl),
+                _ => None,
+            })
+            .max()
+    }
+
+    /// Worst-case wait until every non-majority cache must have refetched:
+    /// the max remaining TTL across differing rows. None when nothing
+    /// differs (or differing rows carry no records).
+    pub fn stale_expiry_bound(&self, summary: &Summary, now: Instant) -> Option<Duration> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|&(i, row)| {
+                !summary.majority_rows[i]
+                    && matches!(
+                        row,
+                        RowState::Done {
+                            result: QueryResult::Records { .. },
+                            ..
+                        }
+                    )
+            })
+            .filter_map(|(_, row)| row.remaining_ttl(now))
+            .max()
     }
 
     pub fn in_flight(&self) -> bool {
@@ -221,15 +392,18 @@ impl App {
             // table's "✓ OK until the round settles" display.
             SortMode::Status => {
                 let in_flight = self.in_flight();
+                let now = Instant::now();
                 order.sort_by_key(|&i| match &self.rows[i] {
                     RowState::Done { result, .. } => match result {
-                        QueryResult::Records { .. } if in_flight || summary.majority_rows[i] => 3,
-                        QueryResult::Records { .. } => 0, // differs
-                        QueryResult::NoRecords(_) => 1,
-                        QueryResult::Error(_) => 2,
+                        QueryResult::Records { .. } if in_flight || summary.majority_rows[i] => 4,
+                        // Misbehaving caches are the most actionable rows.
+                        QueryResult::Records { .. } if self.ttl_verdict(i, now).is_some() => 0,
+                        QueryResult::Records { .. } => 1, // differs
+                        QueryResult::NoRecords(_) => 2,
+                        QueryResult::Error(_) => 3,
                     },
-                    RowState::Pending => 4,
-                    RowState::Idle => 5,
+                    RowState::Pending => 5,
+                    RowState::Idle => 6,
                 });
             }
             SortMode::Answer => order.sort_by(|&a, &b| {
@@ -342,6 +516,26 @@ impl App {
     }
 }
 
+/// Compact human duration for countdowns and TTLs: `42s`, `4m10s`, `23h59m`,
+/// `2d3h`. Two units max keeps it within a narrow table column.
+pub fn fmt_secs(total: u64) -> String {
+    let (days, hours, mins, secs) = (
+        total / 86_400,
+        (total % 86_400) / 3_600,
+        (total % 3_600) / 60,
+        total % 60,
+    );
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{mins:02}m")
+    } else if mins > 0 {
+        format!("{mins}m{secs:02}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +550,7 @@ mod tests {
                     min_ttl: 60,
                 },
                 elapsed: Duration::from_millis(10),
+                at: Instant::now(),
             })
             .collect();
         app
@@ -399,6 +594,7 @@ mod tests {
         app.rows.push(RowState::Done {
             result: QueryResult::Error("refused".into()),
             elapsed: Duration::from_secs(3),
+            at: Instant::now(),
         });
         let s = app.summary();
         assert_eq!(s.groups, 1);
@@ -433,6 +629,7 @@ mod tests {
         app.rows.push(RowState::Done {
             result: QueryResult::Error("timeout".into()),
             elapsed: Duration::from_secs(3),
+            at: Instant::now(),
         });
         app.sort = SortMode::Status;
         let summary = app.summary();
@@ -446,6 +643,165 @@ mod tests {
         assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
+    /// A `now` safely in the future so tests can place observations "in the
+    /// past" relative to it without risking Instant underflow on a
+    /// freshly-booted machine.
+    fn future_now() -> Instant {
+        Instant::now() + Duration::from_secs(100_000)
+    }
+
+    fn obs(values: &[&str], min_ttl: u32, now: Instant, ago: u64) -> Observation {
+        Observation {
+            values: values.iter().map(|v| v.to_string()).collect(),
+            min_ttl,
+            at: now - Duration::from_secs(ago),
+        }
+    }
+
+    #[test]
+    fn fmt_secs_is_compact_two_units() {
+        assert_eq!(fmt_secs(42), "42s");
+        assert_eq!(fmt_secs(250), "4m10s");
+        assert_eq!(fmt_secs(3600), "1h00m");
+        assert_eq!(fmt_secs(86_399), "23h59m");
+        assert_eq!(fmt_secs(90_000), "1d1h");
+    }
+
+    #[test]
+    fn verdict_needs_at_least_two_observations() {
+        let mut app = App::new("example.com".into());
+        let now = future_now();
+        app.history[0] = VecDeque::from([obs(&["old"], 60, now, 500)]);
+        assert_eq!(app.ttl_verdict(0, now), None);
+    }
+
+    #[test]
+    fn same_answer_past_reported_ttl_is_a_stale_cache() {
+        let mut app = App::new("example.com".into());
+        let now = future_now();
+        // First seen 120s ago with a 60s TTL: deadline (60s + grace) passed,
+        // TTL never rose, answer unchanged → the cache is ignoring its TTL.
+        app.history[0] = VecDeque::from([obs(&["old"], 60, now, 120), obs(&["old"], 60, now, 10)]);
+        assert_eq!(app.ttl_verdict(0, now), Some(TtlVerdict::PastTtl));
+    }
+
+    #[test]
+    fn same_answer_within_ttl_is_no_verdict() {
+        let mut app = App::new("example.com".into());
+        let now = future_now();
+        app.history[0] = VecDeque::from([obs(&["old"], 300, now, 60), obs(&["old"], 300, now, 10)]);
+        assert_eq!(app.ttl_verdict(0, now), None);
+    }
+
+    #[test]
+    fn ttl_rising_with_same_answer_means_upstream_lag() {
+        let mut app = App::new("example.com".into());
+        let now = future_now();
+        // TTL jumped 60 → 300: the resolver refetched and the authority
+        // handed the old data back — not this cache's fault.
+        app.history[0] = VecDeque::from([obs(&["old"], 60, now, 100), obs(&["old"], 300, now, 40)]);
+        assert_eq!(app.ttl_verdict(0, now), Some(TtlVerdict::Upstream));
+    }
+
+    #[test]
+    fn answer_change_resets_the_streak() {
+        let mut app = App::new("example.com".into());
+        let now = future_now();
+        // Old answer lingered way past TTL, but the *current* answer is one
+        // fresh sample: no verdict against the new streak.
+        app.history[0] = VecDeque::from([
+            obs(&["old"], 60, now, 500),
+            obs(&["old"], 60, now, 400),
+            obs(&["new"], 60, now, 10),
+        ]);
+        assert_eq!(app.ttl_verdict(0, now), None);
+    }
+
+    #[test]
+    fn history_is_a_bounded_fifo() {
+        let mut app = App::new("example.com".into());
+        for i in 0..(HISTORY_CAP + 5) {
+            app.apply(QueryOutcome {
+                resolver_index: 0,
+                generation: 0,
+                result: QueryResult::Records {
+                    values: vec![format!("v{i}")],
+                    min_ttl: 60,
+                },
+                elapsed: Duration::from_millis(10),
+            });
+        }
+        assert_eq!(app.history[0].len(), HISTORY_CAP);
+        // Oldest entries were dropped first.
+        assert_eq!(app.history[0].front().unwrap().values, vec!["v5"]);
+    }
+
+    #[test]
+    fn requery_skips_agreeing_rows_until_their_ttl_expires() {
+        let mut app = app_with_answers(&[&["new"], &["new"], &["old"]]);
+        app.queried = Some(("example.com".into(), RecordType::A));
+        // Majority rows are fresh (60s TTL): only the differing row re-polls.
+        let (_, _, _, indices) = app.begin_requery().unwrap();
+        assert_eq!(indices, vec![2]);
+        assert!(matches!(app.rows[2], RowState::Pending));
+        assert!(matches!(app.rows[0], RowState::Done { .. }));
+    }
+
+    #[test]
+    fn requery_repolls_agreeing_rows_once_expired_and_all_errors() {
+        let mut app = app_with_answers(&[&["new"], &["new"], &["old"]]);
+        // Row 0's cache entry has expired (TTL 0): even though it agrees,
+        // its answer can now legally change, so it re-polls.
+        if let RowState::Done {
+            result: QueryResult::Records { min_ttl, .. },
+            ..
+        } = &mut app.rows[0]
+        {
+            *min_ttl = 0;
+        }
+        app.rows.push(RowState::Done {
+            result: QueryResult::Error("timeout".into()),
+            elapsed: Duration::from_secs(3),
+            at: Instant::now(),
+        });
+        app.queried = Some(("example.com".into(), RecordType::A));
+        let (_, _, _, indices) = app.begin_requery().unwrap();
+        assert_eq!(indices, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn estimated_ttl_is_max_over_majority_rows_only() {
+        let mut app = app_with_answers(&[&["x"], &["x"], &["y"]]);
+        let ttls = [300u32, 3600, 999_999];
+        for (row, ttl) in app.rows.iter_mut().zip(ttls) {
+            if let RowState::Done {
+                result: QueryResult::Records { min_ttl, .. },
+                ..
+            } = row
+            {
+                *min_ttl = ttl;
+            }
+        }
+        let summary = app.summary();
+        // The differing row's huge TTL must not leak into the estimate.
+        assert_eq!(app.estimated_ttl(&summary), Some(3600));
+    }
+
+    #[test]
+    fn stale_expiry_bound_covers_only_differing_rows() {
+        let app = app_with_answers(&[&["new"], &["new"], &["old"]]);
+        let summary = app.summary();
+        let bound = app.stale_expiry_bound(&summary, Instant::now()).unwrap();
+        // The differing row was just answered with a 60s TTL.
+        assert!(bound <= Duration::from_secs(60));
+        assert!(bound > Duration::from_secs(50));
+
+        // Full agreement → nothing stale → no bound.
+        let app = app_with_answers(&[&["x"], &["x"]]);
+        let summary = app.summary();
+        assert_eq!(app.stale_expiry_bound(&summary, Instant::now()), None);
+    }
+
     #[test]
     fn nxdomain_counts_as_responding_and_blocks_full_propagation() {
         // "No such record" is a real propagation signal: that resolver
@@ -454,6 +810,7 @@ mod tests {
         app.rows.push(RowState::Done {
             result: QueryResult::NoRecords("NXDOMAIN".into()),
             elapsed: Duration::from_millis(20),
+            at: Instant::now(),
         });
         let s = app.summary();
         assert_eq!(s.responding, 3);
