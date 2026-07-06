@@ -48,6 +48,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - README: Arch Linux AUR package information.
   ([#8](https://github.com/514-labs/dnsglobe/pull/8))
 
+### Changed
+
+- Releases are now cut by merging a version-bump PR: the release workflow is
+  dispatched automatically and publishes to crates.io (new) as well as
+  Homebrew, so `cargo install dnsglobe` stays current with each release.
+  ([#19](https://github.com/514-labs/dnsglobe/pull/19))
+
 ## [0.2.0] - 2026-07-05
 
 ### Added

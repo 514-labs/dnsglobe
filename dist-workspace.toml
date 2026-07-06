@@ -14,9 +14,12 @@ tap = "514-labs/homebrew-tap"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+publish-jobs = ["homebrew", "./publish-crates"]
 # Which actions to run on pull requests
 pr-run-mode = "plan"
+# Trigger releases by workflow dispatch (the tag is created by the workflow),
+# so a merged version-bump PR can kick off a release without a manual tag push
+dispatch-releases = true
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program

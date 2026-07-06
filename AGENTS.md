@@ -72,6 +72,20 @@ methods rather than mutating state inline.
 
 ## Releases
 
-Releases are cut by tagging `v*`; the dist-generated `release.yml` workflow
-builds binaries and publishes the Homebrew formula. Feature PRs never touch
-versioning — just leave the changelog entry under `[Unreleased]`.
+Releases are cut with a version-bump PR:
+
+1. Bump `version` in `Cargo.toml` and run `cargo check` so `Cargo.lock`
+   picks up the new version.
+2. In `CHANGELOG.md`, rename `[Unreleased]` to the new version with today's
+   date and add a fresh empty `[Unreleased]` heading above it.
+3. Open a PR with just those changes and merge it.
+
+On merge, `tag-release.yml` sees the new (untagged) version on `main` and
+dispatches the dist-generated `release.yml`, which builds binaries, publishes
+to crates.io (`publish-crates.yml`, needs the `CARGO_REGISTRY_TOKEN` secret)
+and the Homebrew tap, and creates the `v*` tag and GitHub release. A release
+can also be re-run or cut manually from the Actions tab by dispatching
+`release.yml` with the tag.
+
+Feature PRs never touch versioning — just leave the changelog entry under
+`[Unreleased]`.

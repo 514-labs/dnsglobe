@@ -1,0 +1,32 @@
+# Publishes the crate to crates.io during a release. This is a dist "custom
+# publish job": release.yml calls it (see publish-jobs in dist-workspace.toml)
+# after artifacts are built and uploaded, with `secrets: inherit` — so it
+# needs a CARGO_REGISTRY_TOKEN repo secret holding a crates.io API token.
+name: Publish to crates.io
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          version="$(cargo pkgid | sed 's/.*[@#]//')"
+          # Skip when the version is already up: a release re-run after a
+          # partial failure (e.g. in the Homebrew job) must not die here.
+          if curl -fsSL -H "User-Agent: dnsglobe-release-ci" \
+              "https://crates.io/api/v1/crates/dnsglobe/versions" \
+              | jq -e --arg v "$version" '.versions[] | select(.num == $v)' > /dev/null; then
+            echo "dnsglobe $version is already on crates.io, skipping"
+            exit 0
+          fi
+          cargo publish

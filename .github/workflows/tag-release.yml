@@ -1,0 +1,36 @@
+# Turns a merged version-bump PR into a release: when a push to main changes
+# Cargo.toml and the crate version has no tag yet, dispatch the dist-generated
+# release.yml with that version. release.yml builds the binaries, publishes to
+# crates.io and the Homebrew tap, and creates the v* tag and GitHub release.
+#
+# workflow_dispatch is one of the two event types GITHUB_TOKEN is allowed to
+# trigger from inside a workflow, so no PAT is needed here.
+name: Release on version bump
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dispatch release.yml if this version is untagged
+        run: |
+          version="$(cargo pkgid | sed 's/.*[@#]//')"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "v$version already tagged, nothing to release"
+            exit 0
+          fi
+          echo "Dispatching release for v$version"
+          gh workflow run release.yml --ref main -f "tag=v$version"
