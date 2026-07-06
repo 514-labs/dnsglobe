@@ -15,7 +15,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup update stable && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - name: Format
