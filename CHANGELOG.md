@@ -17,7 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `✗ SERVFAIL` in the table (`FAIL` in `--once` output) with their own
   footer count. Previously they were lumped in with timeouts/refusals, so a
   broken delegation could report as fully propagated.
-  ([#21](https://github.com/514-labs/dnsglobe/pull/23))
+  ([#23](https://github.com/514-labs/dnsglobe/pull/23))
 
 ## [0.3.0] - 2026-07-06
 
