@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Word and line cursor motions in the domain input: Option/Alt+←/→ (or
+  Ctrl+←/→, or Alt+B/F) moves the cursor by one dot-separated label;
+  Cmd+←/→ (or Home/End, or Ctrl+A/E) jumps to the start/end of the input.
+  Cmd is reported via the kitty keyboard protocol, enabled when the
+  terminal supports it. ([#17](https://github.com/514-labs/dnsglobe/pull/17))
 - Argument parsing via clap: `--help` and `--version` now work, invalid
   arguments get proper error messages, and an optional record-type
   positional (`dnsglobe example.com TXT`) sets the starting record type in
