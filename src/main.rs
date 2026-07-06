@@ -25,31 +25,56 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).peekable();
 
-    // `--once <domain> [type]` runs a single check and prints plain text —
+    // `--once <domain> --type <type>` runs a single check and prints plain text —
     // handy for scripts and for testing without a TTY.
     if args.peek().map(String::as_str) == Some("--once") {
         args.next();
-        let domain = args
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("usage: dnsglobe --once <domain> [type]"))?;
-        let rtype = match args.next() {
-            Some(t) => RecordType::from_str(&t.to_uppercase())
-                .map_err(|_| anyhow::anyhow!("unknown record type: {t}"))?,
-            None => RecordType::A,
-        };
+        let (domain, rtype) = parse_args(args, "dnsglobe --once <domain> [--type <type>]")?;
         return run_once(domain, rtype).await;
     }
 
-    let initial_domain = args.next().unwrap_or_default();
+    let (initial_domain, initial_rtype) = parse_args(args, "dnsglobe [domain] [--type <type>]")?;
     let terminal = ratatui::init();
-    let result = run_tui(terminal, initial_domain).await;
+    let result = run_tui(terminal, initial_domain, initial_rtype).await;
     ratatui::restore();
     result
 }
 
-async fn run_tui(mut terminal: ratatui::DefaultTerminal, initial_domain: String) -> Result<()> {
+fn parse_args(
+    args: impl IntoIterator<Item = String>,
+    usage: &'static str,
+) -> Result<(String, RecordType)> {
+    let mut domain = None;
+    let mut rtype = RecordType::A;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--type" | "-t" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("usage: {usage}"))?;
+                rtype = parse_record_type(&value)?;
+            }
+            _ if domain.is_none() => domain = Some(arg),
+            _ => return Err(anyhow::anyhow!("usage: {usage}")),
+        }
+    }
+
+    Ok((domain.unwrap_or_default(), rtype))
+}
+
+fn parse_record_type(t: &str) -> Result<RecordType> {
+    RecordType::from_str(&t.to_uppercase()).map_err(|_| anyhow::anyhow!("unknown record type: {t}"))
+}
+
+async fn run_tui(
+    mut terminal: ratatui::DefaultTerminal,
+    initial_domain: String,
+    initial_rtype: RecordType,
+) -> Result<()> {
     let auto_query = !initial_domain.is_empty();
-    let mut app = App::new(initial_domain);
+    let mut app = App::with_record_type(initial_domain, initial_rtype);
 
     // Worker tasks send results here; keeping `tx` alive in this scope means
     // `rx.recv()` never observes a closed channel.

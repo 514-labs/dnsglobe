@@ -125,6 +125,14 @@ impl App {
         }
     }
 
+    pub fn with_record_type(domain: String, rtype: RecordType) -> Self {
+        let rtype_idx = RECORD_TYPES.iter().position(|&t| t == rtype).unwrap_or(0);
+        Self {
+            rtype_idx,
+            ..Self::new(domain)
+        }
+    }
+
     pub fn record_type(&self) -> RecordType {
         RECORD_TYPES[self.rtype_idx]
     }

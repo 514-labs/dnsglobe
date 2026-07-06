@@ -44,7 +44,8 @@ Run:
 ```sh
 dnsglobe                            # start empty, type a domain
 dnsglobe example.com                # query immediately and watch
-dnsglobe --once example.com TXT    # no TUI: print results, exit (for scripts)
+dnsglobe example.com --type TXT     # query a specific record type and watch
+dnsglobe --once example.com -t TXT  # no TUI: print results, exit (for scripts)
 ```
 
 ### Keys
