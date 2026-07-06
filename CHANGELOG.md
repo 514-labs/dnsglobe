@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Nix flake support: `nix run github:514-labs/dnsglobe` builds and runs
+  dnsglobe from source on any system with Nix flakes enabled; specific
+  releases can be pinned via git tag (`github:514-labs/dnsglobe/v0.3.0`).
+  A `devbox.json` is included for reproducible development environments.
+  ([#10](https://github.com/514-labs/dnsglobe/issues/10))
+
 ## [0.3.1] - 2026-07-06
 
 ### Fixed

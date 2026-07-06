@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.12.0/.schema/devbox.schema.json",
+  "packages": [
+    "rustc",
+    "cargo",
+    "rust-analyzer",
+    "pkg-config",
+    "openssl"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'Welcome to the dnsglobe Devbox environment!'"
+    ],
+    "scripts": {
+      "build": "cargo build --release",
+      "test": "cargo test",
+      "run": "cargo run --",
+      "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+      "once": "cargo run -- example.com --once"
+    }
+  }
+}

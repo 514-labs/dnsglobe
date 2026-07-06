@@ -48,6 +48,7 @@ brew install 514-labs/tap/dnsglobe   # Homebrew (macOS/Linux)
 cargo install dnsglobe               # from crates.io
 yay -S dnsglobe                      # from archlinux aur (compile from source)
 yay -S dnsglobe-bin                  # from archlinux aur (install prebuilt binary)
+nix run github:514-labs/dnsglobe     # Nix flakes (builds from source)
 # or grab a prebuilt binary from the GitHub Releases page
 ```
 
@@ -112,6 +113,50 @@ with no resolvers) is reported at startup with the offending entry named.
   verified to answer external queries; many well-known ISP resolvers (and,
   notably, all major African ones) refuse queries from outside their network,
   so they can't be included.
+
+## Nix
+
+The project provides optional Nix flake outputs for users who already use Nix. The flake builds from source.
+
+```bash
+# Latest source from default branch
+nix run github:514-labs/dnsglobe
+
+# Specific release (uses the flake at that git tag)
+nix run github:514-labs/dnsglobe/v0.3.1
+
+# Named outputs (if the flake exposes them): #latest, #source
+nix run github:514-labs/dnsglobe#source
+
+# Build / develop
+nix build github:514-labs/dnsglobe
+nix develop github:514-labs/dnsglobe
+```
+
+The flake exposes `packages.<system>.default`, `apps.<system>.default`, `devShells.<system>.default`, and `overlays.default`.
+
+Update through the same Nix workflow you used to install. For profile installs, run `nix profile list` and then `nix profile upgrade <index-or-name>`. For flake inputs, run `nix flake update <repo>` in your own flake and rebuild.
+
+## Devbox
+
+For reproducible development environments, use Devbox:
+
+```bash
+# Install Devbox first (if not already installed)
+curl -fsSL https://get.jetify.dev/devbox | bash
+
+# Initialize the environment
+devbox shell
+
+# Build the project
+devbox run build
+```
+
+Or install Devbox via Homebrew:
+
+```bash
+brew install jetify-com/devbox/devbox
+```
 
 ---
 
