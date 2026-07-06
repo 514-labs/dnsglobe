@@ -48,6 +48,9 @@ dnsglobe example.com --type TXT     # query a specific record type and watch
 dnsglobe --once example.com -t TXT  # no TUI: print results, exit (for scripts)
 ```
 
+Use `--type` (or `-t`) to choose the DNS record type. Supported types are
+`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, and `SOA`; the default is `A`.
+
 ### Keys
 
 | Key            | Action                          |
