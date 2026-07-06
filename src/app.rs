@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use hickory_resolver::proto::rr::RecordType;
 
 use crate::dns::{QueryOutcome, QueryResult};
-use crate::resolvers::RESOLVERS;
+use crate::resolvers;
 
 pub const RECORD_TYPES: &[RecordType] = &[
     RecordType::A,
@@ -113,7 +113,7 @@ impl App {
             cursor: domain.len(),
             domain,
             rtype_idx: 0,
-            rows: vec![RowState::Idle; RESOLVERS.len()],
+            rows: vec![RowState::Idle; resolvers::active().len()],
             generation: 0,
             spinner_frame: 0,
             should_quit: false,
@@ -177,7 +177,7 @@ impl App {
             return None;
         }
         self.generation += 1;
-        self.rows = vec![RowState::Pending; RESOLVERS.len()];
+        self.rows = vec![RowState::Pending; resolvers::active().len()];
         self.queried = Some((domain.clone(), self.record_type()));
         Some((domain, self.record_type(), self.generation))
     }
@@ -187,7 +187,7 @@ impl App {
     pub fn begin_requery(&mut self) -> Option<(String, RecordType, u64)> {
         let (domain, rtype) = self.queried.clone()?;
         self.generation += 1;
-        self.rows = vec![RowState::Pending; RESOLVERS.len()];
+        self.rows = vec![RowState::Pending; resolvers::active().len()];
         Some((domain, rtype, self.generation))
     }
 
@@ -210,7 +210,7 @@ impl App {
         let mut order: Vec<usize> = (0..self.rows.len()).collect();
         match self.sort {
             SortMode::Resolver => {}
-            SortMode::Location => order.sort_by_key(|&i| RESOLVERS[i].location),
+            SortMode::Location => order.sort_by_key(|&i| resolvers::active()[i].location.as_str()),
             // Fastest first; rows without a result sink to the bottom.
             SortMode::Time => order.sort_by_key(|&i| match &self.rows[i] {
                 RowState::Done { elapsed, .. } => *elapsed,
@@ -384,10 +384,10 @@ mod tests {
     #[test]
     fn full_agreement_means_agree_equals_responding() {
         // The watch-mode stop condition: agree == responding.
-        let answers = vec![&["x"] as &[&str]; crate::resolvers::RESOLVERS.len()];
+        let answers = vec![&["x"] as &[&str]; resolvers::active().len()];
         let app = app_with_answers(&answers);
         let s = app.summary();
-        assert_eq!(s.responding, crate::resolvers::RESOLVERS.len());
+        assert_eq!(s.responding, resolvers::active().len());
         assert_eq!(s.agree, s.responding);
     }
 
@@ -395,7 +395,7 @@ mod tests {
     fn unreachable_resolvers_do_not_block_full_propagation() {
         // Refused/timed-out resolvers carry no signal: with one error row,
         // the rest agreeing still counts as 100% (agree == responding).
-        let mut app = app_with_answers(&vec![&["x"] as &[&str]; RESOLVERS.len() - 1]);
+        let mut app = app_with_answers(&vec![&["x"] as &[&str]; resolvers::active().len() - 1]);
         app.rows.push(RowState::Done {
             result: QueryResult::Error("refused".into()),
             elapsed: Duration::from_secs(3),
@@ -403,23 +403,26 @@ mod tests {
         let s = app.summary();
         assert_eq!(s.groups, 1);
         assert_eq!(s.errors, 1);
-        assert_eq!(s.responding, RESOLVERS.len() - 1);
+        assert_eq!(s.responding, resolvers::active().len() - 1);
         assert_eq!(s.agree, s.responding);
     }
 
     #[test]
     fn location_sort_groups_locations_and_keeps_curated_order_within() {
-        let mut app = app_with_answers(&vec![&["x"] as &[&str]; RESOLVERS.len()]);
+        let mut app = app_with_answers(&vec![&["x"] as &[&str]; resolvers::active().len()]);
         app.sort = SortMode::Location;
         let summary = app.summary();
         let order = app.display_order(&summary);
-        let locations: Vec<&str> = order.iter().map(|&i| RESOLVERS[i].location).collect();
+        let locations: Vec<&str> = order
+            .iter()
+            .map(|&i| resolvers::active()[i].location.as_str())
+            .collect();
         assert!(locations.is_sorted());
         // Stable sort: within one location, curated order is preserved.
         let us: Vec<usize> = order
             .iter()
             .copied()
-            .filter(|&i| RESOLVERS[i].location == "US")
+            .filter(|&i| resolvers::active()[i].location == "US")
             .collect();
         assert!(us.is_sorted());
     }

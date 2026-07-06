@@ -1,6 +1,8 @@
 # dnsglobe
 
 [![crates.io](https://img.shields.io/crates/v/dnsglobe)](https://crates.io/crates/dnsglobe)
+[![dnsglobe](https://img.shields.io/aur/version/dnsglobe?label=aur%20dnsglobe)](https://aur.archlinux.org/packages/dnsglobe/)
+[![dnsglobe-bin](https://img.shields.io/aur/version/dnsglobe-bin?label=aur%20dnsglobe-bin)](https://aur.archlinux.org/packages/dnsglobe-bin/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **A global DNS propagation checker for your terminal** — a Rust TUI that
@@ -30,9 +32,6 @@ dot per resolver, colored by status (green agrees, magenta differs, red
 error, yellow in flight).
 
 ## Usage
-
-[![dnsglobe](https://img.shields.io/aur/version/dnsglobe?label=dnsglobe)](https://aur.archlinux.org/packages/dnsglobe/)
-[![dnsglobe-bin](https://img.shields.io/aur/version/dnsglobe-bin?label=dnsglobe-bin)](https://aur.archlinux.org/packages/dnsglobe-bin/)
 
 Install:
 
@@ -66,11 +65,39 @@ dnsglobe --once example.com TXT    # no TUI: print results, exit (for scripts)
 | Ctrl+U         | clear domain                    |
 | Esc / Ctrl+C   | quit                            |
 
+## Configuration
+
+Optionally, add your own resolvers — or replace the built-in list entirely —
+with a TOML config file at `~/.config/dnsglobe/config.toml`
+(`$XDG_CONFIG_HOME/dnsglobe/config.toml` if set). Set `DNSGLOBE_CONFIG` to
+use a different path.
+
+```toml
+# Set to true to replace the built-in list instead of extending it —
+# e.g. to watch propagation across your own nameservers only.
+replace = false
+
+[[resolvers]]
+name = "Corp DNS"        # required — shown in the Resolver column
+ip = "10.0.0.53"         # required — IPv4 or IPv6, queried on port 53
+location = "HQ"          # optional — Loc column / location sort
+lat = 40.7               # optional — position on the world map;
+lon = -74.0              #            omit both to leave it off the map
+
+[[resolvers]]
+name = "NS1 (public)"
+ip = "198.51.100.53"
+```
+
+Invalid config (bad IP, unknown key, `lat` without `lon`, `replace = true`
+with no resolvers) is reported at startup with the offending entry named.
+
 ## Notes
 
 - Several resolvers are anycast networks, so the responding node is the one
   nearest to you; the location column is the operator's home region.
-- Resolver list lives in `src/resolvers.rs` — add or remove entries freely.
-  Every entry was verified to answer external queries; many well-known ISP
-  resolvers (and, notably, all major African ones) refuse queries from
-  outside their network, so they can't be included.
+- The built-in resolver list lives in `src/resolvers.rs`; use the config file
+  above to extend or replace it without rebuilding. Every built-in entry was
+  verified to answer external queries; many well-known ISP resolvers (and,
+  notably, all major African ones) refuse queries from outside their network,
+  so they can't be included.

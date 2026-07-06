@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, T
 
 use crate::app::{App, RECORD_TYPES, RowState, SPINNER, Summary};
 use crate::dns::QueryResult;
-use crate::resolvers::RESOLVERS;
+use crate::resolvers;
 
 const ACCENT: Color = Color::Cyan;
 /// Table needs ~93 cols; only show the map when there's room for both.
@@ -51,7 +51,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_gauge(frame, app, &summary, gauge);
     // Clamp scroll so the last page stays full; height minus borders+header.
     let visible = table.height.saturating_sub(3) as usize;
-    app.scroll = app.scroll.min(RESOLVERS.len().saturating_sub(visible));
+    app.scroll = app
+        .scroll
+        .min(resolvers::active().len().saturating_sub(visible));
     draw_table(frame, app, &summary, complete, table);
     if let Some(right) = right {
         // Height follows from width via the aspect ratio; leftover space
@@ -99,7 +101,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
-    let total = RESOLVERS.len();
+    let total = resolvers::active().len();
 
     if app.queried.is_none() {
         let hint = Paragraph::new(Line::from(Span::styled(
@@ -168,7 +170,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
     let rows = app
         .display_order(summary)
         .into_iter()
-        .map(|i| (i, (&RESOLVERS[i], &app.rows[i])))
+        .map(|i| (i, (&resolvers::active()[i], &app.rows[i])))
         .map(|(i, (resolver, state))| {
             let (time_cell, ttl_cell, status_cell, answer_cell) = match state {
                 RowState::Idle => (
@@ -237,12 +239,15 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                 }
             };
             Row::new(vec![
-                Cell::from(resolver.name),
+                Cell::from(resolver.name.as_str()),
                 Cell::from(Span::styled(
-                    resolver.location,
+                    resolver.location.as_str(),
                     Style::new().fg(Color::DarkGray),
                 )),
-                Cell::from(Span::styled(resolver.ip, Style::new().fg(Color::DarkGray))),
+                Cell::from(Span::styled(
+                    resolver.ip.to_string(),
+                    Style::new().fg(Color::DarkGray),
+                )),
                 time_cell,
                 ttl_cell,
                 status_cell,
@@ -272,7 +277,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                 Line::from(format!(
                     " sort: {} (Ctrl+S) · {} resolvers (↑/↓ scroll) ",
                     app.sort.label(),
-                    RESOLVERS.len()
+                    resolvers::active().len()
                 ))
                 .right_aligned()
                 .style(Style::new().fg(Color::DarkGray)),
@@ -299,7 +304,10 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                 color: Color::DarkGray,
                 resolution: MapResolution::High,
             });
-            for (i, (resolver, state)) in RESOLVERS.iter().zip(&app.rows).enumerate() {
+            for (i, (resolver, state)) in resolvers::active().iter().zip(&app.rows).enumerate() {
+                let Some((lat, lon)) = resolver.coords else {
+                    continue; // config resolver without map coordinates
+                };
                 let color = match state {
                     RowState::Idle => Color::DarkGray,
                     RowState::Pending => Color::Yellow,
@@ -314,11 +322,7 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                         QueryResult::NoRecords(_) | QueryResult::Error(_) => Color::Red,
                     },
                 };
-                ctx.print(
-                    resolver.lon,
-                    resolver.lat,
-                    Span::styled("●", Style::new().fg(color).bold()),
-                );
+                ctx.print(lon, lat, Span::styled("●", Style::new().fg(color).bold()));
             }
         });
     frame.render_widget(canvas, area);
@@ -340,7 +344,7 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
             format!(
                 "Majority answer ({}/{} resolvers):",
                 summary.agree,
-                RESOLVERS.len()
+                resolvers::active().len()
             ),
             Style::new().fg(ACCENT).bold(),
         )));

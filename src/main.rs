@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod dns;
 mod resolvers;
 mod ui;
@@ -15,7 +16,6 @@ use tokio::sync::mpsc;
 
 use app::App;
 use dns::QueryOutcome;
-use resolvers::RESOLVERS;
 
 /// Watch-mode re-poll interval; propagation usually moves on TTL boundaries,
 /// so sub-minute polling is plenty.
@@ -23,6 +23,10 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Fail on a broken config before the terminal enters raw mode, so the
+    // error prints normally.
+    resolvers::init(config::load()?);
+
     let mut args = std::env::args().skip(1).peekable();
 
     // `--once <domain> [type]` runs a single check and prints plain text —
@@ -185,10 +189,10 @@ fn spawn_round(
     tx: &mpsc::UnboundedSender<QueryOutcome>,
     (domain, rtype, generation): (String, RecordType, u64),
 ) {
-    for (resolver_index, resolver) in RESOLVERS.iter().enumerate() {
+    for (resolver_index, resolver) in resolvers::active().iter().enumerate() {
         let tx = tx.clone();
         let domain = domain.clone();
-        let server: IpAddr = resolver.ip.parse().expect("resolver IPs are valid");
+        let server: IpAddr = resolver.ip;
         tokio::spawn(async move {
             let (result, elapsed) = dns::query(server, domain, rtype).await;
             let _ = tx.send(QueryOutcome {
@@ -213,9 +217,9 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("empty domain"))?;
 
     let mut tasks = tokio::task::JoinSet::new();
-    for (resolver_index, resolver) in RESOLVERS.iter().enumerate() {
+    for (resolver_index, resolver) in resolvers::active().iter().enumerate() {
         let domain = domain.clone();
-        let server: IpAddr = resolver.ip.parse().expect("resolver IPs are valid");
+        let server: IpAddr = resolver.ip;
         tasks.spawn(async move {
             let (result, elapsed) = dns::query(server, domain, rtype).await;
             QueryOutcome {
@@ -232,7 +236,7 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
 
     let summary = app.summary();
     println!("{domain} {rtype}\n");
-    for (i, (resolver, row)) in RESOLVERS.iter().zip(&app.rows).enumerate() {
+    for (i, (resolver, row)) in resolvers::active().iter().zip(&app.rows).enumerate() {
         let line = match row {
             app::RowState::Done { result, elapsed } => match result {
                 dns::QueryResult::Records { values, min_ttl } => {
