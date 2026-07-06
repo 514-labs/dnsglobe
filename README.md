@@ -31,6 +31,14 @@ On terminals ≥150 columns wide, a world map appears on the right with one
 dot per resolver, colored by status (green agrees, magenta differs, red
 error, yellow in flight).
 
+Anycast networks are asked which of their sites is answering you: Quad9
+(`TXT id.server.on.quad9.net`), Cloudflare (`CH TXT id.server`), Google
+(egress subnet via `TXT o-o.myaddr.l.google.com` matched against
+`TXT locations.publicdns.goog`), OpenDNS (`TXT debug.opendns.com`),
+CleanBrowsing, and Neustar UltraDNS. The discovered site shows in the Loc
+column as `→YUL`-style codes, and the resolver's map dot moves to the POP
+actually serving your queries.
+
 ## Usage
 
 Install:
@@ -95,7 +103,9 @@ with no resolvers) is reported at startup with the offending entry named.
 ## Notes
 
 - Several resolvers are anycast networks, so the responding node is the one
-  nearest to you; the location column is the operator's home region.
+  nearest to you. Networks with an identification query report the actual
+  answering site (`→YUL`); for the rest the location column is the
+  operator's home region.
 - The built-in resolver list lives in `src/resolvers.rs`; use the config file
   above to extend or replace it without rebuilding. Every built-in entry was
   verified to answer external queries; many well-known ISP resolvers (and,

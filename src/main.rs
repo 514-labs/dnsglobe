@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod dns;
 mod resolvers;
+mod sites;
 mod ui;
 
 use std::net::IpAddr;
@@ -54,7 +55,12 @@ async fn run_tui(mut terminal: ratatui::DefaultTerminal, initial_domain: String)
     // Worker tasks send results here; keeping `tx` alive in this scope means
     // `rx.recv()` never observes a closed channel.
     let (tx, mut rx) = mpsc::unbounded_channel::<QueryOutcome>();
+    // Anycast site discoveries arrive on their own channel: they have no
+    // generation — the answering POP depends on our network path, not on
+    // what domain is being checked.
+    let (site_tx, mut site_rx) = mpsc::unbounded_channel::<(usize, sites::Site)>();
 
+    spawn_site_probes(&site_tx);
     if auto_query {
         spawn_queries(&mut app, &tx);
     }
@@ -94,6 +100,9 @@ async fn run_tui(mut terminal: ratatui::DefaultTerminal, initial_domain: String)
                         app.next_poll = Some(Instant::now() + POLL_INTERVAL);
                     }
                 }
+            }
+            Some((index, site)) = site_rx.recv() => {
+                app.sites[index] = Some(site);
             }
             _ = tick.tick() => {
                 if app.in_flight() {
@@ -181,6 +190,23 @@ fn poll_query(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
     spawn_round(tx, params);
 }
 
+/// Ask each anycast resolver which of its sites is answering us (issue #6).
+/// One shot per run: the site follows our network path, not the query.
+fn spawn_site_probes(site_tx: &mpsc::UnboundedSender<(usize, sites::Site)>) {
+    for (index, resolver) in resolvers::active().iter().enumerate() {
+        let Some(probe) = resolver.probe else {
+            continue;
+        };
+        let site_tx = site_tx.clone();
+        let server = resolver.ip;
+        tokio::spawn(async move {
+            if let Some(site) = sites::discover(probe, server).await {
+                let _ = site_tx.send((index, site));
+            }
+        });
+    }
+}
+
 fn spawn_round(
     tx: &mpsc::UnboundedSender<QueryOutcome>,
     (domain, rtype, generation, indices): (String, RecordType, u64, Vec<usize>),
@@ -212,6 +238,15 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
         .begin_query()
         .ok_or_else(|| anyhow::anyhow!("empty domain"))?;
 
+    // Site probes run concurrently with the query round.
+    let mut probes = tokio::task::JoinSet::new();
+    for (index, resolver) in resolvers::active().iter().enumerate() {
+        if let Some(probe) = resolver.probe {
+            let server = resolver.ip;
+            probes.spawn(async move { (index, sites::discover(probe, server).await) });
+        }
+    }
+
     let mut tasks = tokio::task::JoinSet::new();
     for resolver_index in indices {
         let domain = domain.clone();
@@ -228,6 +263,10 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
     }
     while let Some(outcome) = tasks.join_next().await {
         app.apply(outcome?);
+    }
+    while let Some(probed) = probes.join_next().await {
+        let (index, site) = probed?;
+        app.sites[index] = site;
     }
 
     let summary = app.summary();
@@ -259,9 +298,15 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
             },
             _ => "??".into(),
         };
+        // Anycast resolvers that identified their answering site show it
+        // (→YUL) instead of the operator's configured home location.
+        let location = match &app.sites[i] {
+            Some(site) => format!("→{}", site.code),
+            None => resolver.location.clone(),
+        };
         println!(
             "{:<22} {:<8} {:<16} {line}",
-            resolver.name, resolver.location, resolver.ip
+            resolver.name, location, resolver.ip
         );
     }
 

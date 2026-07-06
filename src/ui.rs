@@ -14,9 +14,9 @@ use crate::dns::QueryResult;
 use crate::resolvers;
 
 const ACCENT: Color = Color::Cyan;
-/// Table needs ~102 cols; only show the map when there's room for both.
-const MIN_WIDTH_FOR_MAP: u16 = 156;
-const TABLE_WIDTH: u16 = 102;
+/// Table needs ~103 cols; only show the map when there's room for both.
+const MIN_WIDTH_FOR_MAP: u16 = 157;
+const TABLE_WIDTH: u16 = 103;
 /// Dot/status color for a cache serving an answer past its own TTL.
 const STALE_COLOR: Color = Color::LightRed;
 /// Dot/status color for "refetched but upstream still serves the old data".
@@ -307,12 +307,21 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                     }
                 }
             };
-            Row::new(vec![
-                Cell::from(resolver.name.as_str()),
-                Cell::from(Span::styled(
+            // A discovered anycast site ("→YUL") replaces the configured
+            // home location: it names the POP actually answering us.
+            let loc_cell = match &app.sites[i] {
+                Some(site) => Cell::from(Span::styled(
+                    format!("→{}", site.code),
+                    Style::new().fg(ACCENT),
+                )),
+                None => Cell::from(Span::styled(
                     resolver.location.as_str(),
                     Style::new().fg(Color::DarkGray),
                 )),
+            };
+            Row::new(vec![
+                Cell::from(resolver.name.as_str()),
+                loc_cell,
                 Cell::from(Span::styled(
                     resolver.ip.to_string(),
                     Style::new().fg(Color::DarkGray),
@@ -329,7 +338,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
         rows,
         [
             Constraint::Length(21),
-            Constraint::Length(7),
+            Constraint::Length(8),
             Constraint::Length(15),
             Constraint::Length(7),
             Constraint::Length(6),
@@ -376,9 +385,11 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                 resolution: MapResolution::High,
             });
             let now = Instant::now();
-            for (i, (resolver, state)) in resolvers::active().iter().zip(&app.rows).enumerate() {
-                let Some((lat, lon)) = resolver.coords else {
-                    continue; // config resolver without map coordinates
+            for (i, state) in app.rows.iter().enumerate() {
+                // Discovered anycast site position when known, else the
+                // configured one; None keeps the resolver off the map.
+                let Some((lat, lon)) = app.effective_coords(i) else {
+                    continue;
                 };
                 let color = match state {
                     RowState::Idle => Color::DarkGray,

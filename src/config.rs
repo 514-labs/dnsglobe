@@ -106,6 +106,7 @@ fn resolver_list(config: Config) -> Result<Vec<Resolver>> {
             location: entry.location,
             ip,
             coords,
+            probe: None,
         });
     }
     if list.is_empty() {

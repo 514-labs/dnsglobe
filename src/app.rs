@@ -5,6 +5,7 @@ use hickory_resolver::proto::rr::RecordType;
 
 use crate::dns::{QueryOutcome, QueryResult};
 use crate::resolvers;
+use crate::sites::Site;
 
 /// Watch-mode re-poll interval; propagation usually moves on TTL boundaries,
 /// so sub-minute polling is plenty.
@@ -161,6 +162,11 @@ pub struct App {
     pub next_poll: Option<Instant>,
     /// Active table ordering, cycled with Ctrl+S.
     pub sort: SortMode,
+    /// Per-resolver anycast site discovered by that operator's identification
+    /// query (issue #6): which POP is actually answering us. None = no probe
+    /// or probe failed. Session-static — the site depends on our network
+    /// path, not on the queried domain.
+    pub sites: Vec<Option<Site>>,
     /// Per-resolver answers across watch-mode polls (bounded FIFO). Cleared
     /// on a fresh query, preserved across re-polls — cache-behavior verdicts
     /// only exist while watching one domain/type.
@@ -182,8 +188,27 @@ impl App {
             auto_refresh: false,
             next_poll: None,
             sort: SortMode::default(),
+            sites: vec![None; resolvers::active().len()],
             history: vec![VecDeque::new(); resolvers::active().len()],
         }
+    }
+
+    /// Where this resolver's answers come from, as shown in the Loc column:
+    /// the discovered anycast site when known, else the configured location.
+    pub fn effective_location(&self, index: usize) -> &str {
+        match &self.sites[index] {
+            Some(site) => &site.code,
+            None => &resolvers::active()[index].location,
+        }
+    }
+
+    /// Map position for this resolver: the discovered site when we know its
+    /// coordinates, else the configured (operator home) position.
+    pub fn effective_coords(&self, index: usize) -> Option<(f64, f64)> {
+        self.sites[index]
+            .as_ref()
+            .and_then(|site| site.coords)
+            .or(resolvers::active()[index].coords)
     }
 
     pub fn record_type(&self) -> RecordType {
@@ -381,7 +406,7 @@ impl App {
         let mut order: Vec<usize> = (0..self.rows.len()).collect();
         match self.sort {
             SortMode::Resolver => {}
-            SortMode::Location => order.sort_by_key(|&i| resolvers::active()[i].location.as_str()),
+            SortMode::Location => order.sort_by_key(|&i| self.effective_location(i)),
             // Fastest first; rows without a result sink to the bottom.
             SortMode::Time => order.sort_by_key(|&i| match &self.rows[i] {
                 RowState::Done { elapsed, .. } => *elapsed,

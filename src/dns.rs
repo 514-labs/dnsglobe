@@ -6,7 +6,7 @@ use hickory_resolver::config::{NameServerConfig, ResolveHosts, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::op::ResponseCode;
-use hickory_resolver::proto::rr::RecordType;
+use hickory_resolver::proto::rr::{RData, RecordType};
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -33,9 +33,9 @@ pub struct QueryOutcome {
     pub elapsed: Duration,
 }
 
-/// Query a single upstream resolver directly (no cache, single attempt) so
-/// each server's own view of the record is what we measure.
-pub async fn query(server: IpAddr, domain: String, rtype: RecordType) -> (QueryResult, Duration) {
+/// One-server resolver going straight at `server` (no cache, single attempt)
+/// so that server's own view of a record is what we measure.
+fn build_resolver(server: IpAddr) -> Result<TokioResolver, NetError> {
     let mut config = ResolverConfig::default();
     // One server entry with both UDP and TCP connections: hickory retries
     // over TCP when a UDP answer comes back truncated (large TXT sets, long
@@ -51,8 +51,13 @@ pub async fn query(server: IpAddr, domain: String, rtype: RecordType) -> (QueryR
     opts.cache_size = 0;
     opts.use_hosts_file = ResolveHosts::Never;
     opts.edns0 = true; // allow >512-byte UDP answers
+    builder.build()
+}
 
-    let resolver = match builder.build() {
+/// Query a single upstream resolver directly (no cache, single attempt) so
+/// each server's own view of the record is what we measure.
+pub async fn query(server: IpAddr, domain: String, rtype: RecordType) -> (QueryResult, Duration) {
+    let resolver = match build_resolver(server) {
         Ok(resolver) => resolver,
         Err(err) => {
             return (
@@ -110,6 +115,78 @@ pub async fn query(server: IpAddr, domain: String, rtype: RecordType) -> (QueryR
     };
 
     (result, elapsed)
+}
+
+/// IN TXT query returning each TXT character-string separately (a record's
+/// strings are answers like `"prefix code"` entries — joining them would
+/// destroy the structure). Used by the anycast site probes; None on any
+/// failure, since a failed probe just means "site unknown".
+pub async fn txt_strings(server: IpAddr, name: &str) -> Option<Vec<String>> {
+    let resolver = build_resolver(server).ok()?;
+    let lookup = tokio::time::timeout(
+        QUERY_TIMEOUT + Duration::from_secs(1),
+        resolver.lookup(name, RecordType::TXT),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let strings: Vec<String> = lookup
+        .answers()
+        .iter()
+        .filter_map(|record| match &record.data {
+            RData::TXT(txt) => Some(&txt.txt_data),
+            _ => None,
+        })
+        .flat_map(|data| data.iter())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (!strings.is_empty()).then_some(strings)
+}
+
+/// CHAOS-class TXT query (`id.server` etc.), which the high-level resolver
+/// can't express — hand-rolled over UDP. Answers are tiny, so no truncation
+/// handling. None on any failure.
+pub async fn chaos_txt(server: IpAddr, name: &str) -> Option<Vec<String>> {
+    use hickory_resolver::proto::op::{Message, Query};
+    use hickory_resolver::proto::rr::{DNSClass, Name};
+    use std::str::FromStr;
+
+    let mut query = Query::query(Name::from_str(name).ok()?, RecordType::TXT);
+    query.set_query_class(DNSClass::CH);
+    let mut message = Message::query();
+    message.metadata.recursion_desired = false;
+    message.add_query(query);
+    let request = message.to_vec().ok()?;
+
+    let bind: std::net::SocketAddr = match server {
+        IpAddr::V4(_) => ([0, 0, 0, 0], 0).into(),
+        IpAddr::V6(_) => (std::net::Ipv6Addr::UNSPECIFIED, 0).into(),
+    };
+    let socket = tokio::net::UdpSocket::bind(bind).await.ok()?;
+    // Connecting filters responses to this server's address.
+    socket.connect((server, 53)).await.ok()?;
+    socket.send(&request).await.ok()?;
+
+    let mut buf = [0u8; 4096];
+    let len = tokio::time::timeout(QUERY_TIMEOUT, socket.recv(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    let response = Message::from_vec(&buf[..len]).ok()?;
+    if response.metadata.id != message.metadata.id {
+        return None;
+    }
+    let strings: Vec<String> = response
+        .answers
+        .iter()
+        .filter_map(|record| match &record.data {
+            RData::TXT(txt) => Some(&txt.txt_data),
+            _ => None,
+        })
+        .flat_map(|data| data.iter())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (!strings.is_empty()).then_some(strings)
 }
 
 fn short_error(message: String) -> String {

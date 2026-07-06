@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 use std::sync::OnceLock;
 
+use crate::sites::SiteProbe;
+
 /// A resolver to query, either built-in or from the user's config file.
 #[derive(Debug, Clone)]
 pub struct Resolver {
@@ -9,6 +11,9 @@ pub struct Resolver {
     pub ip: IpAddr,
     /// (lat, lon) for the world-map view; None keeps the resolver off the map.
     pub coords: Option<(f64, f64)>,
+    /// How to ask this resolver which anycast site answered, if it supports
+    /// an identification query.
+    pub probe: Option<SiteProbe>,
 }
 
 /// The resolver list for this run. Set once at startup (after the config file
@@ -37,6 +42,7 @@ pub fn defaults() -> Vec<Resolver> {
             location: b.location.into(),
             ip: b.ip.parse().expect("built-in resolver IPs are valid"),
             coords: Some((b.lat, b.lon)),
+            probe: b.probe,
         })
         .collect()
 }
@@ -47,6 +53,7 @@ struct Builtin {
     ip: &'static str,
     lat: f64,
     lon: f64,
+    probe: Option<SiteProbe>,
 }
 
 /// Public DNS resolvers spread across regions. Anycast networks are marked as
@@ -65,6 +72,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "8.8.8.8",
         lat: 37.4,
         lon: -122.1,
+        probe: Some(SiteProbe::Google),
     },
     Builtin {
         name: "Cloudflare",
@@ -72,6 +80,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "1.1.1.1",
         lat: 37.8,
         lon: -122.4,
+        probe: Some(SiteProbe::Cloudflare),
     },
     Builtin {
         name: "Quad9",
@@ -79,6 +88,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "9.9.9.9",
         lat: 47.4,
         lon: 8.5,
+        probe: Some(SiteProbe::Quad9),
     },
     Builtin {
         name: "OpenDNS (Cisco)",
@@ -86,6 +96,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "208.67.222.222",
         lat: 33.9,
         lon: -118.2,
+        probe: Some(SiteProbe::OpenDns),
     },
     Builtin {
         name: "CleanBrowsing",
@@ -93,6 +104,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "185.228.168.9",
         lat: 33.4,
         lon: -112.0,
+        probe: Some(SiteProbe::ChIdServer),
     },
     // North America
     Builtin {
@@ -101,6 +113,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "4.2.2.2",
         lat: 39.7,
         lon: -105.0,
+        probe: None,
     },
     Builtin {
         name: "Lumen (Qwest)",
@@ -108,6 +121,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "205.171.3.66",
         lat: 40.4,
         lon: -104.0,
+        probe: None,
     },
     Builtin {
         name: "Hurricane Electric",
@@ -115,6 +129,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "74.82.42.42",
         lat: 37.6,
         lon: -122.0,
+        probe: None,
     },
     Builtin {
         name: "Neustar UltraDNS",
@@ -122,6 +137,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "64.6.64.6",
         lat: 39.0,
         lon: -77.5,
+        probe: Some(SiteProbe::ChIdServer),
     },
     Builtin {
         name: "Comodo Secure DNS",
@@ -129,6 +145,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "8.26.56.26",
         lat: 40.9,
         lon: -74.2,
+        probe: None,
     },
     Builtin {
         name: "FortiGuard",
@@ -136,6 +153,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "208.91.112.53",
         lat: 37.3,
         lon: -121.9,
+        probe: None,
     },
     Builtin {
         name: "CIRA Canadian Shield",
@@ -143,6 +161,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "149.112.121.10",
         lat: 45.4,
         lon: -75.7,
+        probe: None,
     },
     Builtin {
         name: "ControlD",
@@ -150,6 +169,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "76.76.2.0",
         lat: 43.7,
         lon: -79.4,
+        probe: None,
     },
     // Europe
     Builtin {
@@ -158,6 +178,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "86.54.11.100",
         lat: 50.1,
         lon: 14.4,
+        probe: None,
     },
     Builtin {
         name: "CZ.NIC ODVR",
@@ -165,6 +186,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "193.17.47.1",
         lat: 49.9,
         lon: 15.3,
+        probe: None,
     },
     Builtin {
         name: "AdGuard DNS",
@@ -172,6 +194,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "94.140.14.14",
         lat: 34.7,
         lon: 33.0,
+        probe: None,
     },
     Builtin {
         name: "Gcore DNS",
@@ -179,6 +202,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "95.85.95.85",
         lat: 49.6,
         lon: 6.1,
+        probe: None,
     },
     Builtin {
         name: "DNS.SB",
@@ -186,6 +210,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "185.222.222.222",
         lat: 50.1,
         lon: 8.7,
+        probe: None,
     },
     // Russia / Middle East
     Builtin {
@@ -194,6 +219,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "195.46.39.39",
         lat: 55.8,
         lon: 37.6,
+        probe: None,
     },
     Builtin {
         name: "Yandex DNS",
@@ -201,6 +227,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "77.88.8.8",
         lat: 55.6,
         lon: 37.9,
+        probe: None,
     },
     Builtin {
         name: "Comss.one",
@@ -208,6 +235,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "83.220.169.155",
         lat: 56.3,
         lon: 38.1,
+        probe: None,
     },
     Builtin {
         name: "Bezeq Intl",
@@ -215,6 +243,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "192.115.106.10",
         lat: 32.1,
         lon: 34.8,
+        probe: None,
     },
     // East Asia
     Builtin {
@@ -223,6 +252,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "114.114.114.114",
         lat: 32.1,
         lon: 118.8,
+        probe: None,
     },
     Builtin {
         name: "AliDNS",
@@ -230,6 +260,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "223.5.5.5",
         lat: 30.3,
         lon: 120.2,
+        probe: None,
     },
     Builtin {
         name: "DNSPod (Tencent)",
@@ -237,6 +268,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "119.29.29.29",
         lat: 22.5,
         lon: 114.1,
+        probe: None,
     },
     Builtin {
         name: "Baidu DNS",
@@ -244,6 +276,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "180.76.76.76",
         lat: 39.9,
         lon: 116.4,
+        probe: None,
     },
     Builtin {
         name: "CNNIC sDNS",
@@ -251,6 +284,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "1.2.4.8",
         lat: 40.5,
         lon: 116.9,
+        probe: None,
     },
     Builtin {
         name: "360 Secure DNS",
@@ -258,6 +292,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "101.226.4.6",
         lat: 31.2,
         lon: 121.5,
+        probe: None,
     },
     Builtin {
         name: "KT (Kornet)",
@@ -265,6 +300,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "168.126.63.1",
         lat: 37.6,
         lon: 127.0,
+        probe: None,
     },
     Builtin {
         name: "LG U+",
@@ -272,6 +308,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "164.124.101.2",
         lat: 36.5,
         lon: 127.9,
+        probe: None,
     },
     Builtin {
         name: "HiNet (Chunghwa)",
@@ -279,6 +316,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "168.95.1.1",
         lat: 25.0,
         lon: 121.6,
+        probe: None,
     },
     // Southern hemisphere
     Builtin {
@@ -287,6 +325,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "139.130.4.4",
         lat: -33.9,
         lon: 151.2,
+        probe: None,
     },
     Builtin {
         name: "SafeSurfer",
@@ -294,6 +333,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "104.197.28.121",
         lat: -36.8,
         lon: 174.8,
+        probe: None,
     },
     Builtin {
         name: "UOL",
@@ -301,6 +341,7 @@ const BUILTIN: &[Builtin] = &[
         ip: "200.221.11.100",
         lat: -23.5,
         lon: -46.6,
+        probe: None,
     },
 ];
 
