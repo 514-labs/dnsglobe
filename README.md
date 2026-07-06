@@ -112,3 +112,7 @@ with no resolvers) is reported at startup with the offending entry named.
   verified to answer external queries; many well-known ISP resolvers (and,
   notably, all major African ones) refuse queries from outside their network,
   so they can't be included.
+
+---
+
+Made with ❤️ by the folks working on [514.ax](https://www.514.ax).
