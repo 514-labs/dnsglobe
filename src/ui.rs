@@ -1,11 +1,11 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Map, MapResolution};
 use ratatui::widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, TableState};
-use ratatui::Frame;
 
-use crate::app::{App, RowState, Summary, RECORD_TYPES, SPINNER};
+use crate::app::{App, RECORD_TYPES, RowState, SPINNER, Summary};
 use crate::dns::QueryResult;
 use crate::resolvers::RESOLVERS;
 
@@ -47,8 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (body, None)
     };
 
-    let [gauge, table] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(5)]).areas(left);
+    let [gauge, table] = Layout::vertical([Constraint::Length(1), Constraint::Min(5)]).areas(left);
     draw_gauge(frame, app, &summary, gauge);
     // Clamp scroll so the last page stays full; height minus borders+header.
     let visible = table.height.saturating_sub(3) as usize;
@@ -57,8 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(right) = right {
         // Height follows from width via the aspect ratio; leftover space
         // below the map shows the majority answer in full.
-        let map_height = ((f64::from(right.width.saturating_sub(2)) * MAP_ASPECT).round()
-            as u16)
+        let map_height = ((f64::from(right.width.saturating_sub(2)) * MAP_ASPECT).round() as u16)
             .saturating_add(2)
             .min(right.height);
         let [map_area, info_area] =
@@ -145,7 +143,9 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         if summary.responding > 0 && summary.agree == summary.responding {
             label.push_str(" · complete ");
         } else if let Some(at) = app.next_poll {
-            let secs = at.saturating_duration_since(std::time::Instant::now()).as_secs();
+            let secs = at
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs();
             label.push_str(&format!(" · next poll in {secs}s (Ctrl+R stops) "));
         } else {
             label.push_str(" · watch off (Ctrl+R resumes) ");
@@ -165,10 +165,10 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
     let header = Row::new(["Resolver", "Loc", "IP", "Time", "TTL", "Status", "Answer"])
         .style(Style::new().fg(ACCENT).bold());
 
-    let rows = RESOLVERS
-        .iter()
-        .zip(&app.rows)
-        .enumerate()
+    let rows = app
+        .display_order(summary)
+        .into_iter()
+        .map(|i| (i, (&RESOLVERS[i], &app.rows[i])))
         .map(|(i, (resolver, state))| {
             let (time_cell, ttl_cell, status_cell, answer_cell) = match state {
                 RowState::Idle => (
@@ -269,9 +269,13 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
             .borders(Borders::ALL)
             .border_style(Style::new().fg(Color::DarkGray))
             .title_bottom(
-                Line::from(format!(" {} resolvers (↑/↓ scroll) ", RESOLVERS.len()))
-                    .right_aligned()
-                    .style(Style::new().fg(Color::DarkGray)),
+                Line::from(format!(
+                    " sort: {} (Ctrl+S) · {} resolvers (↑/↓ scroll) ",
+                    app.sort.label(),
+                    RESOLVERS.len()
+                ))
+                .right_aligned()
+                .style(Style::new().fg(Color::DarkGray)),
             ),
     );
 
@@ -396,7 +400,7 @@ fn draw_footer(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         ));
     }
     let keys = Line::from(Span::styled(
-        " type to edit · ←/→ move cursor · Enter query+watch · Ctrl+R watch on/off · Tab record type · ↑/↓ scroll · Esc quit",
+        " type to edit · ←/→ move cursor · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Tab record type · ↑/↓ scroll · Esc quit",
         Style::new().fg(Color::DarkGray),
     ));
     let [status_area, keys_area] =

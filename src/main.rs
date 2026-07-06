@@ -125,6 +125,9 @@ fn handle_key(
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.clear_domain();
         }
+        KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.sort = app.sort.next();
+        }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             if app.auto_refresh || app.next_poll.is_some() {
                 app.auto_refresh = false;
@@ -149,10 +152,11 @@ fn handle_key(
         KeyCode::PageDown => app.scroll += 10,
         KeyCode::Backspace => app.backspace(),
         KeyCode::Delete => app.delete(),
-        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                app.insert_char(c.to_ascii_lowercase());
-            }
+        KeyCode::Char(c)
+            if !modifiers.contains(KeyModifiers::CONTROL)
+                && (c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) =>
+        {
+            app.insert_char(c.to_ascii_lowercase());
         }
         _ => {}
     }
@@ -232,7 +236,11 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
         let line = match row {
             app::RowState::Done { result, elapsed } => match result {
                 dns::QueryResult::Records { values, min_ttl } => {
-                    let status = if summary.majority_rows[i] { "OK     " } else { "DIFFERS" };
+                    let status = if summary.majority_rows[i] {
+                        "OK     "
+                    } else {
+                        "DIFFERS"
+                    };
                     format!(
                         "{status} {:>5}ms  ttl={:<7} {}",
                         elapsed.as_millis(),
@@ -257,10 +265,7 @@ async fn run_once(domain: String, rtype: RecordType) -> Result<()> {
 
     println!(
         "\n{} of {} responding · {} unreachable · {} answer group(s)",
-        summary.ok,
-        summary.responding,
-        summary.errors,
-        summary.groups
+        summary.ok, summary.responding, summary.errors, summary.groups
     );
     if summary.agree > 0 {
         println!(

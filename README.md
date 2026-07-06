@@ -57,6 +57,7 @@ dnsglobe --once example.com TXT    # no TUI: print results, exit (for scripts)
 | Ctrl+R         | stop or resume watching         |
 | Tab / Shift-Tab | select record type (A, AAAA, CNAME, MX, NS, TXT, SOA) |
 | ↑/↓ / PgUp/PgDn | scroll the resolver table |
+| Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
 | Ctrl+U         | clear domain                    |
 | Esc / Ctrl+C   | quit                            |
 

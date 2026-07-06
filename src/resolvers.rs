@@ -14,6 +14,7 @@ pub struct Resolver {
     pub lon: f64,
 }
 
+#[rustfmt::skip]
 pub const RESOLVERS: &[Resolver] = &[
     // Global anycast
     Resolver { name: "Google Public DNS", location: "Anycast", ip: "8.8.8.8", lat: 37.4, lon: -122.1 },

@@ -18,6 +18,41 @@ pub const RECORD_TYPES: &[RecordType] = &[
 
 pub const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Table ordering, cycled with Ctrl+S. Sorts are stable, so ties keep the
+/// curated resolver-list order — `Location` therefore doubles as "group by
+/// location", and `Answer` groups identical answers together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    #[default]
+    Resolver,
+    Location,
+    Time,
+    Status,
+    Answer,
+}
+
+impl SortMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            SortMode::Resolver => "resolver",
+            SortMode::Location => "location",
+            SortMode::Time => "time",
+            SortMode::Status => "status",
+            SortMode::Answer => "answer",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            SortMode::Resolver => SortMode::Location,
+            SortMode::Location => SortMode::Time,
+            SortMode::Time => SortMode::Status,
+            SortMode::Status => SortMode::Answer,
+            SortMode::Answer => SortMode::Resolver,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RowState {
     Idle,
@@ -68,6 +103,8 @@ pub struct App {
     pub auto_refresh: bool,
     /// When the next poll fires, if one is scheduled.
     pub next_poll: Option<Instant>,
+    /// Active table ordering, cycled with Ctrl+S.
+    pub sort: SortMode,
 }
 
 impl App {
@@ -84,6 +121,7 @@ impl App {
             scroll: 0,
             auto_refresh: false,
             next_poll: None,
+            sort: SortMode::default(),
         }
     }
 
@@ -165,6 +203,53 @@ impl App {
 
     pub fn in_flight(&self) -> bool {
         self.rows.iter().any(|r| matches!(r, RowState::Pending))
+    }
+
+    /// Resolver indices in display order under the active sort.
+    pub fn display_order(&self, summary: &Summary) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        match self.sort {
+            SortMode::Resolver => {}
+            SortMode::Location => order.sort_by_key(|&i| RESOLVERS[i].location),
+            // Fastest first; rows without a result sink to the bottom.
+            SortMode::Time => order.sort_by_key(|&i| match &self.rows[i] {
+                RowState::Done { elapsed, .. } => *elapsed,
+                _ => Duration::MAX,
+            }),
+            // Problems first: what's blocking propagation is what you scan
+            // for. Mid-flight every answer counts as majority, matching the
+            // table's "✓ OK until the round settles" display.
+            SortMode::Status => {
+                let in_flight = self.in_flight();
+                order.sort_by_key(|&i| match &self.rows[i] {
+                    RowState::Done { result, .. } => match result {
+                        QueryResult::Records { .. } if in_flight || summary.majority_rows[i] => 3,
+                        QueryResult::Records { .. } => 0, // differs
+                        QueryResult::NoRecords(_) => 1,
+                        QueryResult::Error(_) => 2,
+                    },
+                    RowState::Pending => 4,
+                    RowState::Idle => 5,
+                });
+            }
+            SortMode::Answer => order.sort_by(|&a, &b| {
+                let values = |i: usize| match &self.rows[i] {
+                    RowState::Done {
+                        result: QueryResult::Records { values, .. },
+                        ..
+                    } => Some(values),
+                    _ => None,
+                };
+                // Some < None puts answerless rows last.
+                match (values(a), values(b)) {
+                    (Some(va), Some(vb)) => va.cmp(vb),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            }),
+        }
+        order
     }
 
     pub fn summary(&self) -> Summary {
@@ -320,6 +405,42 @@ mod tests {
         assert_eq!(s.errors, 1);
         assert_eq!(s.responding, RESOLVERS.len() - 1);
         assert_eq!(s.agree, s.responding);
+    }
+
+    #[test]
+    fn location_sort_groups_locations_and_keeps_curated_order_within() {
+        let mut app = app_with_answers(&vec![&["x"] as &[&str]; RESOLVERS.len()]);
+        app.sort = SortMode::Location;
+        let summary = app.summary();
+        let order = app.display_order(&summary);
+        let locations: Vec<&str> = order.iter().map(|&i| RESOLVERS[i].location).collect();
+        assert!(locations.is_sorted());
+        // Stable sort: within one location, curated order is preserved.
+        let us: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&i| RESOLVERS[i].location == "US")
+            .collect();
+        assert!(us.is_sorted());
+    }
+
+    #[test]
+    fn status_sort_puts_problems_first_and_time_sort_fastest_first() {
+        let mut app = app_with_answers(&[&["new"], &["new"], &["old"]]);
+        app.rows.push(RowState::Done {
+            result: QueryResult::Error("timeout".into()),
+            elapsed: Duration::from_secs(3),
+        });
+        app.sort = SortMode::Status;
+        let summary = app.summary();
+        // Row 2 differs from the majority, row 3 errored; both sort ahead of
+        // the agreeing rows.
+        assert_eq!(app.display_order(&summary), vec![2, 3, 0, 1]);
+
+        app.sort = SortMode::Time;
+        let order = app.display_order(&summary);
+        // Equal 10ms answers keep their order; the 3s error row is last.
+        assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
     #[test]
