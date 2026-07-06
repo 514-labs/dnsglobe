@@ -31,11 +31,16 @@ error, yellow in flight).
 
 ## Usage
 
+[![dnsglobe](https://img.shields.io/aur/version/dnsglobe?label=dnsglobe)](https://aur.archlinux.org/packages/dnsglobe/)
+[![dnsglobe-bin](https://img.shields.io/aur/version/dnsglobe-bin?label=dnsglobe-bin)](https://aur.archlinux.org/packages/dnsglobe-bin/)
+
 Install:
 
 ```sh
 brew install 514-labs/tap/dnsglobe   # Homebrew (macOS/Linux)
 cargo install dnsglobe               # from crates.io
+yay -S dnsglobe                      # from archlinux aur (compile from source)
+yay -S dnsglobe-bin                  # from archlinux aur (install prebuilt binary)
 # or grab a prebuilt binary from the GitHub Releases page
 ```
 
