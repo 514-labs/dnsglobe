@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Argument parsing via clap: `--help` and `--version` now work, invalid
+  arguments get proper error messages, and an optional record-type
+  positional (`dnsglobe example.com TXT`) sets the starting record type in
+  TUI mode too — previously it was only honored with `--once`. The long
+  `--help` also documents `$DNSGLOBE_CONFIG` and the config-file syntax.
 - Anycast site geolocation: large anycast resolvers (Quad9, Cloudflare,
   Google, OpenDNS, CleanBrowsing, Neustar UltraDNS) are asked which POP is
   answering via identification queries (`id.server` CH TXT and

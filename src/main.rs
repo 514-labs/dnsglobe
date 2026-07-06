@@ -10,6 +10,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use hickory_resolver::proto::rr::RecordType;
@@ -18,39 +19,90 @@ use tokio::sync::mpsc;
 use app::{App, POLL_INTERVAL};
 use dns::QueryOutcome;
 
+const CONFIG_HELP: &str = "\
+Configuration:
+  An optional TOML file adds resolvers to the built-in list, or replaces it
+  entirely (replace = true). Looked up at $DNSGLOBE_CONFIG (error if the file
+  is missing), else $XDG_CONFIG_HOME/dnsglobe/config.toml, else
+  ~/.config/dnsglobe/config.toml.
+
+  # replace = true       # use only the resolvers below, drop the built-ins
+  [[resolvers]]
+  name = \"Corp DNS\"      # required
+  ip = \"10.0.0.53\"       # required, IPv4 or IPv6
+  location = \"HQ\"        # optional; shown in the Loc column
+  lat = 40.7             # optional map position;
+  lon = -74.0            # give both or neither";
+
+/// Global DNS propagation checker TUI — watch a DNS record propagate across
+/// public resolvers worldwide, on a world map in your terminal.
+#[derive(Parser)]
+#[command(
+    version,
+    after_help = "Configuration: custom resolvers via $DNSGLOBE_CONFIG or \
+                  ~/.config/dnsglobe/config.toml (see --help for the syntax)",
+    after_long_help = CONFIG_HELP
+)]
+struct Cli {
+    /// Domain to start checking immediately
+    domain: Option<String>,
+
+    /// Record type to query: A, AAAA, CNAME, MX, NS, TXT or SOA [default: A]
+    #[arg(value_parser = parse_record_type)]
+    record_type: Option<RecordType>,
+
+    /// Run a single check, print a plain-text table, and exit (no TTY needed)
+    #[arg(long, requires = "domain")]
+    once: bool,
+}
+
+fn parse_record_type(s: &str) -> Result<RecordType, String> {
+    RecordType::from_str(&s.to_uppercase())
+        .ok()
+        .filter(|rtype| app::RECORD_TYPES.contains(rtype))
+        .ok_or_else(|| {
+            let supported: Vec<String> = app::RECORD_TYPES.iter().map(|t| t.to_string()).collect();
+            format!(
+                "unsupported record type (expected one of {})",
+                supported.join(", ")
+            )
+        })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     // Fail on a broken config before the terminal enters raw mode, so the
     // error prints normally.
     resolvers::init(config::load()?);
 
-    let mut args = std::env::args().skip(1).peekable();
-
-    // `--once <domain> [type]` runs a single check and prints plain text —
-    // handy for scripts and for testing without a TTY.
-    if args.peek().map(String::as_str) == Some("--once") {
-        args.next();
-        let domain = args
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("usage: dnsglobe --once <domain> [type]"))?;
-        let rtype = match args.next() {
-            Some(t) => RecordType::from_str(&t.to_uppercase())
-                .map_err(|_| anyhow::anyhow!("unknown record type: {t}"))?,
-            None => RecordType::A,
-        };
-        return run_once(domain, rtype).await;
+    // `--once` runs a single check and prints plain text — handy for scripts
+    // and for testing without a TTY.
+    if cli.once {
+        let domain = cli.domain.expect("clap enforces `requires`");
+        return run_once(domain, cli.record_type.unwrap_or(RecordType::A)).await;
     }
 
-    let initial_domain = args.next().unwrap_or_default();
     let terminal = ratatui::init();
-    let result = run_tui(terminal, initial_domain).await;
+    let result = run_tui(terminal, cli.domain.unwrap_or_default(), cli.record_type).await;
     ratatui::restore();
     result
 }
 
-async fn run_tui(mut terminal: ratatui::DefaultTerminal, initial_domain: String) -> Result<()> {
+async fn run_tui(
+    mut terminal: ratatui::DefaultTerminal,
+    initial_domain: String,
+    initial_rtype: Option<RecordType>,
+) -> Result<()> {
     let auto_query = !initial_domain.is_empty();
     let mut app = App::new(initial_domain);
+    if let Some(rtype) = initial_rtype {
+        app.rtype_idx = app::RECORD_TYPES
+            .iter()
+            .position(|t| *t == rtype)
+            .unwrap_or(0);
+    }
 
     // Worker tasks send results here; keeping `tx` alive in this scope means
     // `rx.recv()` never observes a closed channel.
