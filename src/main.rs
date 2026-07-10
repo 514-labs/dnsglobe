@@ -1,9 +1,11 @@
 mod app;
 mod config;
 mod dns;
+mod globe;
 mod resolvers;
 mod sites;
 mod ui;
+mod world_data;
 
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -205,6 +207,9 @@ fn handle_key(
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.sort = app.sort.next();
+        }
+        KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_globe();
         }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             if app.auto_refresh || app.next_poll.is_some() {

@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- 3D rotating globe view: Ctrl+G morphs the flat resolver map into a
+  spinning orthographic globe (and back), with the resolver status dots
+  riding their continents and hiding on the far hemisphere as the planet
+  turns. The globe keeps the map's braille rendering, adds a faint
+  graticule so the rotation reads even over open ocean, and is tilted
+  15° so the northern-hemisphere resolver clusters stay clear of the limb.
+
 - Nix flake support: `nix run github:514-labs/dnsglobe` builds and runs
   dnsglobe from source on any system with Nix flakes enabled; specific
   releases can be pinned via git tag (`github:514-labs/dnsglobe/v0.3.0`).

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use hickory_resolver::proto::rr::RecordType;
 
 use crate::dns::{QueryOutcome, QueryResult};
+use crate::globe::GlobeView;
 use crate::resolvers;
 use crate::sites::Site;
 
@@ -165,6 +166,8 @@ pub struct App {
     pub next_poll: Option<Instant>,
     /// Active table ordering, cycled with Ctrl+S.
     pub sort: SortMode,
+    /// Flat map ↔ rotating globe, toggled with Ctrl+G.
+    pub globe: GlobeView,
     /// Per-resolver anycast site discovered by that operator's identification
     /// query (issue #6): which POP is actually answering us. None = no probe
     /// or probe failed. Session-static — the site depends on our network
@@ -191,6 +194,7 @@ impl App {
             auto_refresh: false,
             next_poll: None,
             sort: SortMode::default(),
+            globe: GlobeView::new(Instant::now()),
             sites: vec![None; resolvers::active().len()],
             history: vec![VecDeque::new(); resolvers::active().len()],
         }
@@ -271,6 +275,10 @@ impl App {
     pub fn clear_domain(&mut self) {
         self.domain.clear();
         self.cursor = 0;
+    }
+
+    pub fn toggle_globe(&mut self) {
+        self.globe.toggle(Instant::now());
     }
 
     pub fn cycle_record_type(&mut self, forward: bool) {

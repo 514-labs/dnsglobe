@@ -48,10 +48,14 @@ methods rather than mutating state inline.
      table without needing a TTY.
    - TUI behavior (key bindings, rendering, watch mode): drive the real
      binary through a PTY, e.g. with `expect` or tmux, and assert on the
-     rendered output. Two PTY gotchas: an `expect`-spawned PTY starts with
+     rendered output. Three PTY gotchas: an `expect`-spawned PTY starts with
      zero size (fix with `stty rows 30 columns 110 < $spawn_out(slave,name)`
-     after spawn), and Tcl's `\x` escape eats all following hex digits —
-     write `Esc` as `\033`, never `\x1b` followed by a hex-looking char.
+     after spawn); Tcl's `\x` escape eats all following hex digits —
+     write `Esc` as `\033`, never `\x1b` followed by a hex-looking char;
+     and Tcl's `sleep` stops reading the PTY, so a continuously-redrawing
+     app fills the ~16KB kernel buffer and blocks mid-write, freezing
+     frames — wait with `expect -timeout N "ZZZ_never_matches"` instead,
+     which keeps draining output.
 
 6. **Keep the UI discoverable.** A new key binding must appear in the footer
    hint line in `draw_footer` (`src/ui.rs`). Mind macOS/Windows/Linux
