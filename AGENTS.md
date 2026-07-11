@@ -65,7 +65,11 @@ methods rather than mutating state inline.
 
 7. **Update `CHANGELOG.md`.** Add an entry under `[Unreleased]` in the
    matching Keep-a-Changelog section (`Added`/`Changed`/`Fixed`), written
-   for users, ending with a link to the PR.
+   for users, ending with a link to the PR. Exception: fixing a bug that was
+   itself introduced in `[Unreleased]` gets no entry — no released version
+   ever had the bug, so there is nothing for users to note. If the fix
+   changes behavior that an existing `[Unreleased]` entry describes, amend
+   that entry instead.
 
 8. **Refresh the demo if visuals changed.** The README GIF is recorded with
    [vhs](https://github.com/charmbracelet/vhs) from `demo/demo.tape`.

@@ -44,14 +44,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#25](https://github.com/514-labs/dnsglobe/issues/25),
   [#27](https://github.com/514-labs/dnsglobe/pull/27))
 
-### Fixed
-
-- On terminals both wide and tall, the globe no longer grows over the
-  majority-answer panel below it: the globe now cedes exactly the rows that
-  panel needs (legend only while idle, plus the answer list once a round
-  settles), so the resolved values stay visible in globe view.
-  ([#28](https://github.com/514-labs/dnsglobe/pull/28))
-
 ## [0.3.1] - 2026-07-06
 
 ### Fixed
