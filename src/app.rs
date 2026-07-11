@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use hickory_resolver::proto::rr::RecordType;
 
-use crate::dns::{QueryOutcome, QueryResult};
+use crate::dns::{ClientSubnet, QueryOutcome, QueryResult};
 use crate::globe::GlobeView;
 use crate::resolvers;
 use crate::sites::Site;
@@ -98,6 +98,9 @@ pub enum RowState {
         elapsed: Duration,
         /// When the answer arrived; anchors the cache-expiry countdown.
         at: Instant,
+        /// Whether the resolver honored the round's ECS option (see
+        /// `QueryOutcome::ecs_honored`). Always None on ECS-less rounds.
+        ecs_honored: Option<bool>,
     },
 }
 
@@ -162,6 +165,22 @@ pub struct Summary {
     pub majority_rows: Vec<bool>,
     /// Union of record values across the largest group.
     pub majority_values: Vec<String>,
+    /// Answers from resolvers that ignored the round's ECS option. Shown for
+    /// reference but excluded from `responding` — they describe the
+    /// resolver's own vantage point, not the probed client subnet, so they
+    /// must not drag the propagation percentage (or hold watch mode open)
+    /// on GeoDNS zones where their answer legitimately differs.
+    pub ecs_blind: usize,
+}
+
+/// Parameters of one query round, handed to the spawner in `main`.
+pub struct Round {
+    pub domain: String,
+    pub rtype: RecordType,
+    pub ecs: Option<ClientSubnet>,
+    pub generation: u64,
+    /// Resolver indices to (re)query.
+    pub indices: Vec<usize>,
 }
 
 pub struct App {
@@ -174,7 +193,12 @@ pub struct App {
     pub generation: u64,
     pub spinner_frame: usize,
     pub should_quit: bool,
-    pub queried: Option<(String, RecordType)>,
+    pub queried: Option<(String, RecordType, Option<ClientSubnet>)>,
+    /// Client subnets from --ecs/config, cycled with Ctrl+N. Empty for most
+    /// runs — every trace of ECS in the UI is gated on this being non-empty.
+    pub ecs_list: Vec<ClientSubnet>,
+    /// Index into `ecs_list`; None = ECS off (the plain view of the zone).
+    pub ecs_sel: Option<usize>,
     /// Table scroll offset; clamped against the viewport during draw.
     pub scroll: usize,
     /// Watch mode: re-poll after each round until propagation reaches 100%.
@@ -213,6 +237,8 @@ impl App {
             spinner_frame: 0,
             should_quit: false,
             queried: None,
+            ecs_list: Vec::new(),
+            ecs_sel: None,
             scroll: 0,
             auto_refresh: false,
             next_poll: None,
@@ -345,9 +371,36 @@ impl App {
         };
     }
 
+    /// Install the ECS list from config/CLI. Selection starts on the first
+    /// subnet — passing --ecs means "query with it", not just "have it
+    /// available".
+    pub fn set_ecs_list(&mut self, list: Vec<ClientSubnet>) {
+        self.ecs_sel = (!list.is_empty()).then_some(0);
+        self.ecs_list = list;
+    }
+
+    /// The subnet the next Enter will query with.
+    pub fn active_ecs(&self) -> Option<ClientSubnet> {
+        self.ecs_sel.map(|i| self.ecs_list[i])
+    }
+
+    /// Ctrl+N: step the selection through the configured subnets plus an
+    /// "off" position. Like Tab for the record type, this only changes the
+    /// selection — a query fires when the user presses Enter, never here.
+    pub fn cycle_ecs(&mut self) {
+        if self.ecs_list.is_empty() {
+            return;
+        }
+        self.ecs_sel = match self.ecs_sel {
+            Some(i) if i + 1 < self.ecs_list.len() => Some(i + 1),
+            Some(_) => None, // past the last subnet: ECS off
+            None => Some(0),
+        };
+    }
+
     /// Arm a new query round. Returns what to query (all resolvers), or None
     /// if the domain input is empty.
-    pub fn begin_query(&mut self) -> Option<(String, RecordType, u64, Vec<usize>)> {
+    pub fn begin_query(&mut self) -> Option<Round> {
         let domain = self.domain.trim().trim_end_matches('.').to_string();
         if domain.is_empty() {
             return None;
@@ -355,9 +408,15 @@ impl App {
         self.generation += 1;
         self.rows = vec![RowState::Pending; resolvers::active().len()];
         self.history = vec![VecDeque::new(); resolvers::active().len()];
-        self.queried = Some((domain.clone(), self.record_type()));
-        let all = (0..self.rows.len()).collect();
-        Some((domain, self.record_type(), self.generation, all))
+        let ecs = self.active_ecs();
+        self.queried = Some((domain.clone(), self.record_type(), ecs));
+        Some(Round {
+            domain,
+            rtype: self.record_type(),
+            ecs,
+            generation: self.generation,
+            indices: (0..self.rows.len()).collect(),
+        })
     }
 
     /// Arm a poll of the last-queried domain/type, ignoring the (possibly
@@ -366,8 +425,11 @@ impl App {
     /// countdown still runs (a cache can't legally change before expiry), and
     /// picked up again once it hits zero — so an old-value *majority* still
     /// gets re-checked and can flip.
-    pub fn begin_requery(&mut self) -> Option<(String, RecordType, u64, Vec<usize>)> {
-        let (domain, rtype) = self.queried.clone()?;
+    pub fn begin_requery(&mut self) -> Option<Round> {
+        // Re-polls stay on the queried round's ECS subnet even if the user
+        // has cycled the selection since — mixing subnets within one table
+        // would make the group comparison meaningless.
+        let (domain, rtype, ecs) = self.queried.clone()?;
         let summary = self.summary();
         let now = Instant::now();
         let indices: Vec<usize> = (0..self.rows.len())
@@ -392,7 +454,13 @@ impl App {
         for &i in &indices {
             self.rows[i] = RowState::Pending;
         }
-        Some((domain, rtype, self.generation, indices))
+        Some(Round {
+            domain,
+            rtype,
+            ecs,
+            generation: self.generation,
+            indices,
+        })
     }
 
     pub fn apply(&mut self, outcome: QueryOutcome) {
@@ -415,6 +483,7 @@ impl App {
             result: outcome.result,
             elapsed: outcome.elapsed,
             at: now,
+            ecs_honored: outcome.ecs_honored,
         };
     }
 
@@ -564,10 +633,28 @@ impl App {
         let mut first_seen: HashMap<&str, usize> = HashMap::new();
         let mut ok_rows: Vec<usize> = Vec::new();
         for (i, row) in self.rows.iter().enumerate() {
-            let RowState::Done { result, .. } = row else {
+            let RowState::Done {
+                result,
+                ecs_honored,
+                ..
+            } = row
+            else {
                 continue;
             };
             summary.done += 1;
+            // An answer that ignored the round's ECS option is a different
+            // question's answer: keep it out of the propagation math (see
+            // `Summary::ecs_blind`). Errors and SERVFAIL keep their normal
+            // handling — they carry no echo either way.
+            if *ecs_honored == Some(false)
+                && matches!(
+                    result,
+                    QueryResult::Records { .. } | QueryResult::NoRecords(_)
+                )
+            {
+                summary.ecs_blind += 1;
+                continue;
+            }
             match result {
                 QueryResult::Records { values, .. } => {
                     summary.ok += 1;
@@ -668,6 +755,7 @@ mod tests {
                 },
                 elapsed: Duration::from_millis(10),
                 at: Instant::now(),
+                ecs_honored: None,
             })
             .collect();
         app
@@ -712,6 +800,7 @@ mod tests {
             result: QueryResult::Error("refused".into()),
             elapsed: Duration::from_secs(3),
             at: Instant::now(),
+            ecs_honored: None,
         });
         let s = app.summary();
         assert_eq!(s.groups, 1);
@@ -747,6 +836,7 @@ mod tests {
             result: QueryResult::Error("timeout".into()),
             elapsed: Duration::from_secs(3),
             at: Instant::now(),
+            ecs_honored: None,
         });
         app.sort = SortMode::Status;
         let summary = app.summary();
@@ -933,6 +1023,7 @@ mod tests {
                     min_ttl: 60,
                 },
                 elapsed: Duration::from_millis(10),
+                ecs_honored: None,
             });
         }
         assert_eq!(app.history[0].len(), HISTORY_CAP);
@@ -943,10 +1034,10 @@ mod tests {
     #[test]
     fn requery_skips_agreeing_rows_until_their_ttl_expires() {
         let mut app = app_with_answers(&[&["new"], &["new"], &["old"]]);
-        app.queried = Some(("example.com".into(), RecordType::A));
+        app.queried = Some(("example.com".into(), RecordType::A, None));
         // Majority rows are fresh (60s TTL): only the differing row re-polls.
-        let (_, _, _, indices) = app.begin_requery().unwrap();
-        assert_eq!(indices, vec![2]);
+        let round = app.begin_requery().unwrap();
+        assert_eq!(round.indices, vec![2]);
         assert!(matches!(app.rows[2], RowState::Pending));
         assert!(matches!(app.rows[0], RowState::Done { .. }));
     }
@@ -967,10 +1058,11 @@ mod tests {
             result: QueryResult::Error("timeout".into()),
             elapsed: Duration::from_secs(3),
             at: Instant::now(),
+            ecs_honored: None,
         });
-        app.queried = Some(("example.com".into(), RecordType::A));
-        let (_, _, _, indices) = app.begin_requery().unwrap();
-        assert_eq!(indices, vec![0, 2, 3]);
+        app.queried = Some(("example.com".into(), RecordType::A, None));
+        let round = app.begin_requery().unwrap();
+        assert_eq!(round.indices, vec![0, 2, 3]);
     }
 
     #[test]
@@ -1016,6 +1108,7 @@ mod tests {
             result: QueryResult::ServFail,
             elapsed: Duration::from_millis(20),
             at: Instant::now(),
+            ecs_honored: None,
         });
         let s = app.summary();
         assert_eq!(s.servfail, 1);
@@ -1037,11 +1130,90 @@ mod tests {
                 result,
                 elapsed: Duration::from_millis(20),
                 at: Instant::now(),
+                ecs_honored: None,
             });
         }
         app.sort = SortMode::Status;
         let summary = app.summary();
         assert_eq!(app.display_order(&summary), vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn ecs_cycling_steps_through_subnets_and_off() {
+        let mut app = App::new("example.com".into());
+        // No list configured: Ctrl+N is inert and ECS stays off.
+        app.cycle_ecs();
+        assert_eq!(app.active_ecs(), None);
+
+        let list = vec![
+            crate::dns::parse_ecs("203.0.113.0/24").unwrap(),
+            crate::dns::parse_ecs("198.51.100.0/24").unwrap(),
+        ];
+        app.set_ecs_list(list.clone());
+        // Configuring ECS means querying with it: selection starts on the
+        // first subnet, then cycles through the rest, off, and around.
+        assert_eq!(app.active_ecs(), Some(list[0]));
+        app.cycle_ecs();
+        assert_eq!(app.active_ecs(), Some(list[1]));
+        app.cycle_ecs();
+        assert_eq!(app.active_ecs(), None);
+        app.cycle_ecs();
+        assert_eq!(app.active_ecs(), Some(list[0]));
+    }
+
+    #[test]
+    fn requery_keeps_the_queried_rounds_subnet_despite_cycling() {
+        let subnet = crate::dns::parse_ecs("203.0.113.0/24").unwrap();
+        let mut app = App::new("example.com".into());
+        app.set_ecs_list(vec![subnet]);
+        let round = app.begin_query().unwrap();
+        assert_eq!(round.ecs, Some(subnet));
+
+        // Cycling to "off" mid-watch must not switch what re-polls query:
+        // mixing subnets within one table would break the group comparison.
+        app.cycle_ecs();
+        assert_eq!(app.active_ecs(), None);
+        let round = app.begin_requery().unwrap();
+        assert_eq!(round.ecs, Some(subnet));
+        // A fresh Enter picks up the new selection.
+        let round = app.begin_query().unwrap();
+        assert_eq!(round.ecs, None);
+    }
+
+    #[test]
+    fn ecs_blind_answers_are_excluded_from_propagation() {
+        // Two resolvers honored the subnet and agree; one (e.g. Cloudflare)
+        // ignored ECS and shows its own vantage point's answer. That row
+        // must not block 100% propagation — on GeoDNS it may never match.
+        let mut app = app_with_answers(&[&["geo"], &["geo"]]);
+        for row in &mut app.rows {
+            if let RowState::Done { ecs_honored, .. } = row {
+                *ecs_honored = Some(true);
+            }
+        }
+        app.rows.push(RowState::Done {
+            result: QueryResult::Records {
+                values: vec!["other".into()],
+                min_ttl: 60,
+            },
+            elapsed: Duration::from_millis(10),
+            at: Instant::now(),
+            ecs_honored: Some(false),
+        });
+        app.rows.push(RowState::Done {
+            result: QueryResult::NoRecords("NXDomain".into()),
+            elapsed: Duration::from_millis(10),
+            at: Instant::now(),
+            ecs_honored: Some(false),
+        });
+        let s = app.summary();
+        assert_eq!(s.ecs_blind, 2);
+        assert_eq!(s.ok, 2);
+        assert_eq!(s.no_records, 0);
+        assert_eq!(s.groups, 1);
+        assert_eq!(s.responding, 2);
+        assert_eq!(s.agree, s.responding); // watch mode can complete
+        assert_eq!(s.majority_rows, vec![true, true, false, false]);
     }
 
     #[test]
@@ -1053,6 +1225,7 @@ mod tests {
             result: QueryResult::NoRecords("NXDOMAIN".into()),
             elapsed: Duration::from_millis(20),
             at: Instant::now(),
+            ecs_honored: None,
         });
         let s = app.summary();
         assert_eq!(s.responding, 3);

@@ -59,7 +59,24 @@ dnsglobe                            # start empty, type a domain
 dnsglobe example.com                # query immediately and watch
 dnsglobe example.com TXT            # same, starting on TXT records
 dnsglobe --once example.com TXT     # no TUI: print results, exit (for scripts)
+dnsglobe example.com --ecs 203.0.113.0/24        # see the zone as that client network does
+dnsglobe --once example.com --ecs 203.0.113.0/24,198.51.100.0/24
+                                    # one table per subnet + a convergence summary
 ```
+
+### EDNS Client Subnet (ECS)
+
+`--ecs` (or `ecs = [...]` in the config file) attaches an EDNS Client Subnet
+option ([RFC 7871](https://datatracker.ietf.org/doc/html/rfc7871)) to every
+query, so GeoDNS zones answer for that client network instead of the
+resolver's own vantage point. Subnets are CIDRs or bare IPs; most public
+resolvers use at most /24 (IPv4) or /56 (IPv6). With several subnets
+configured, Ctrl+N cycles the active one (plus an *off* position) and the
+next Enter queries with it; `--once` runs every subnet and ends with a
+per-subnet convergence summary. Resolvers that deliberately ignore ECS
+(Cloudflare, Quad9, …) are tagged `NO ECS` — their answer is shown for
+reference but excluded from the propagation percentage, since it describes
+their own location, not the probed network.
 
 ### Keys
 
@@ -72,6 +89,7 @@ dnsglobe --once example.com TXT     # no TUI: print results, exit (for scripts)
 | Tab / Shift-Tab | select record type (A, AAAA, CNAME, MX, NS, TXT, SOA) |
 | ↑/↓ / PgUp/PgDn | scroll the resolver table |
 | Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
+| Ctrl+N         | cycle the ECS client subnet (only when `--ecs`/config set one up) |
 | Ctrl+U         | clear domain                    |
 | Esc / Ctrl+C   | quit                            |
 
@@ -86,6 +104,9 @@ use a different path.
 # Set to true to replace the built-in list instead of extending it —
 # e.g. to watch propagation across your own nameservers only.
 replace = false
+
+# EDNS Client Subnet(s) to query with (Ctrl+N cycles; --ecs overrides).
+ecs = ["203.0.113.0/24"]
 
 [[resolvers]]
 name = "Corp DNS"        # required — shown in the Resolver column
@@ -116,9 +137,9 @@ coastline = "gray"        # map/globe land outline
 grid      = "244"         # globe graticule and limb
 ```
 
-Invalid config (bad IP, unknown key, unrecognized color, `lat` without
-`lon`, `replace = true` with no resolvers) is reported at startup with the
-offending entry named.
+Invalid config (bad IP, unknown key, unrecognized color, bad `ecs` subnet,
+`lat` without `lon`, `replace = true` with no resolvers) is reported at
+startup with the offending entry named.
 
 ## Notes
 

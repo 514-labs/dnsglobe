@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- EDNS Client Subnet (RFC 7871) support: `--ecs 203.0.113.0/24` (or
+  `ecs = [...]` in the config file) attaches that client subnet to every
+  query, so GeoDNS zones answer for that network instead of each resolver's
+  own vantage point. Takes CIDRs or bare IPs, and accepts several subnets to
+  compare how answers converge across client networks: Ctrl+N cycles the
+  active subnet in the TUI, and `--once` prints one table per subnet plus a
+  convergence summary. Resolvers that deliberately ignore ECS (Cloudflare,
+  Quad9, …) are tagged `NO ECS` and left out of the propagation percentage —
+  their answer describes their own location, not the probed network.
+  ([#14](https://github.com/514-labs/dnsglobe/issues/14),
+  [#29](https://github.com/514-labs/dnsglobe/pull/29))
 - 3D rotating globe view: the flat resolver map can morph into a spinning
   orthographic globe, with the resolver status dots riding their continents
   and hiding on the far hemisphere as the planet turns. The globe keeps the

@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::app::ViewMode;
+use crate::dns::{self, ClientSubnet};
 use crate::resolvers::{self, Resolver};
 use crate::theme::{self, Theme};
 
@@ -26,6 +27,9 @@ pub struct Config {
     replace: bool,
     /// Preferred map panel style; the --view flag overrides it.
     view: Option<ViewMode>,
+    /// EDNS Client Subnets to query with; the --ecs flag overrides the lot.
+    #[serde(default)]
+    ecs: Vec<String>,
     #[serde(default)]
     theme: ThemeTable,
     #[serde(default)]
@@ -68,6 +72,7 @@ struct Entry {
 pub struct Settings {
     pub resolvers: Vec<Resolver>,
     pub view: Option<ViewMode>,
+    pub ecs: Vec<ClientSubnet>,
     pub theme: Theme,
 }
 
@@ -76,6 +81,7 @@ impl Settings {
         Self {
             resolvers: resolvers::defaults(),
             view: None,
+            ecs: Vec::new(),
             theme: Theme::default(),
         }
     }
@@ -105,13 +111,28 @@ pub fn load() -> Result<Settings> {
     let view = config.view;
     let theme = build_theme(std::mem::take(&mut config.theme))
         .with_context(|| format!("invalid config {}", path.display()))?;
+    let ecs = ecs_list(std::mem::take(&mut config.ecs))
+        .with_context(|| format!("invalid config {}", path.display()))?;
     let resolvers =
         resolver_list(config).with_context(|| format!("invalid config {}", path.display()))?;
     Ok(Settings {
         resolvers,
         view,
+        ecs,
         theme,
     })
+}
+
+/// Parse the `ecs` array, erroring with the offending entry so a typo'd
+/// subnet is easy to find in the file.
+fn ecs_list(entries: Vec<String>) -> Result<Vec<ClientSubnet>> {
+    entries
+        .iter()
+        .map(|entry| {
+            dns::parse_ecs(entry)
+                .map_err(|message| anyhow::anyhow!("ecs entry {entry:?}: {message}"))
+        })
+        .collect()
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -349,6 +370,22 @@ mod tests {
         let chain = format!("{err:#}");
         assert!(chain.contains("theme.stale"), "{chain}");
         assert!(chain.contains("\"ornage\""), "{chain}");
+    }
+
+    #[test]
+    fn ecs_entries_parse_with_bare_ips_getting_full_prefixes() {
+        let config: Config = toml::from_str(r#"ecs = ["203.0.113.77/24", "2001:db8::1"]"#).unwrap();
+        let subnets = ecs_list(config.ecs).unwrap();
+        // Host bits zeroed, bare address gets a full-length prefix.
+        assert_eq!(dns::fmt_ecs(&subnets[0]), "203.0.113.0/24");
+        assert_eq!(dns::fmt_ecs(&subnets[1]), "2001:db8::1/128");
+    }
+
+    #[test]
+    fn bad_ecs_entry_errors_with_the_entry_text() {
+        let config: Config = toml::from_str(r#"ecs = ["10.0.0.0/33"]"#).unwrap();
+        let err = ecs_list(config.ecs).unwrap_err();
+        assert!(err.to_string().contains("10.0.0.0/33"), "{err}");
     }
 
     #[test]
