@@ -385,7 +385,7 @@ impl App {
     }
 
     /// Ctrl+N: step the selection through the configured subnets plus an
-    /// "off" position. The caller follows up with `begin_ecs_requery` so the
+    /// "off" position. The caller follows up with `begin_reselect` so the
     /// table refreshes for the new subnet without waiting for Enter.
     pub fn cycle_ecs(&mut self) {
         if self.ecs_list.is_empty() {
@@ -408,16 +408,14 @@ impl App {
         Some(self.arm_round(domain, self.record_type()))
     }
 
-    /// Arm a fresh round for the already-queried domain/type with the
-    /// current ECS selection: Ctrl+N re-queries as it cycles. Reads
-    /// `queried`, not the (possibly mid-edit) input field, and does nothing
-    /// before the first query — there's nothing to refresh yet.
-    pub fn begin_ecs_requery(&mut self) -> Option<Round> {
-        if self.ecs_list.is_empty() {
-            return None;
-        }
-        let (domain, rtype, _) = self.queried.clone()?;
-        Some(self.arm_round(domain, rtype))
+    /// Arm a fresh round for the already-queried domain with the current
+    /// record-type and ECS selections: Tab and Ctrl+N re-query as they
+    /// cycle. Reads `queried`'s domain, not the (possibly mid-edit) input
+    /// field, and does nothing before the first query — there's nothing to
+    /// refresh yet.
+    pub fn begin_reselect(&mut self) -> Option<Round> {
+        let (domain, ..) = self.queried.clone()?;
+        Some(self.arm_round(domain, self.record_type()))
     }
 
     /// Reset every row and start a round of all resolvers, capturing the
@@ -446,7 +444,7 @@ impl App {
     /// gets re-checked and can flip.
     pub fn begin_requery(&mut self) -> Option<Round> {
         // Re-polls stay on the queried round's ECS subnet (Ctrl+N re-arms
-        // `queried` via begin_ecs_requery, so the two can't drift) — mixing
+        // `queried` via begin_reselect, so the two can't drift) — mixing
         // subnets within one table would make the group comparison
         // meaningless.
         let (domain, rtype, ecs) = self.queried.clone()?;
@@ -1212,7 +1210,7 @@ mod tests {
 
         // Before any query there's nothing to refresh: cycling alone.
         app.cycle_ecs();
-        assert!(app.begin_ecs_requery().is_none());
+        assert!(app.begin_reselect().is_none());
         app.cycle_ecs(); // back around: off
         app.cycle_ecs(); // first subnet again
         assert_eq!(app.active_ecs(), Some(list[0]));
@@ -1222,13 +1220,30 @@ mod tests {
         // even while the input field is mid-edit.
         app.insert_char('x');
         app.cycle_ecs();
-        let round = app.begin_ecs_requery().unwrap();
+        let round = app.begin_reselect().unwrap();
         assert_eq!(round.domain, "example.com");
         assert_eq!(round.ecs, Some(list[1]));
         assert!(round.generation > first.generation);
         assert_eq!(round.indices.len(), resolvers::active().len());
         // The new round is what re-polls now follow.
         assert_eq!(app.queried.as_ref().unwrap().2, Some(list[1]));
+    }
+
+    #[test]
+    fn tab_requeries_with_the_new_record_type() {
+        let mut app = App::new("example.com".into());
+        // Nothing queried yet: cycling the type refreshes nothing.
+        app.cycle_record_type(true);
+        assert!(app.begin_reselect().is_none());
+
+        app.begin_query().unwrap();
+        app.insert_char('x'); // mid-edit input must not leak into the round
+        app.cycle_record_type(true);
+        let round = app.begin_reselect().unwrap();
+        assert_eq!(round.domain, "example.com");
+        assert_eq!(round.rtype, RECORD_TYPES[2]); // A → AAAA → CNAME
+        // Re-polls follow the new type.
+        assert_eq!(app.queried.as_ref().unwrap().1, RECORD_TYPES[2]);
     }
 
     #[test]

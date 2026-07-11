@@ -45,6 +45,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Tab / Shift-Tab now re-query the checked domain with the newly selected
+  record type right away, instead of waiting for Enter — matching the new
+  Ctrl+N behavior for ECS subnets.
+  ([#29](https://github.com/514-labs/dnsglobe/pull/29))
 - The default palette now stays legible on terminal themes with mid-toned
   backgrounds, like macOS Terminal's "Ocean": de-emphasized text uses the
   faint attribute instead of dark gray (dimming your theme's own foreground

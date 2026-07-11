@@ -261,10 +261,9 @@ fn handle_key(
         // Cycling re-queries right away — no Enter needed to see the new
         // subnet's answers; before the first query it just moves the chip.
         KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.cycle_ecs();
-            if let Some(round) = app.begin_ecs_requery() {
-                app.next_poll = None;
-                spawn_round(tx, round);
+            if !app.ecs_list.is_empty() {
+                app.cycle_ecs();
+                requery_selection(app, tx);
             }
         }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -279,8 +278,16 @@ fn handle_key(
             }
         }
         KeyCode::Enter => spawn_queries(app, tx),
-        KeyCode::Tab => app.cycle_record_type(true),
-        KeyCode::BackTab => app.cycle_record_type(false),
+        // Tab re-queries as it cycles, like Ctrl+N for ECS — no Enter needed
+        // to see the newly selected type's answers.
+        KeyCode::Tab => {
+            app.cycle_record_type(true);
+            requery_selection(app, tx);
+        }
+        KeyCode::BackTab => {
+            app.cycle_record_type(false);
+            requery_selection(app, tx);
+        }
         // Cmd+←/→ on macOS (reported as SUPER under the kitty keyboard
         // protocol): jump to the start/end of the input, like Home/End.
         KeyCode::Left if modifiers.contains(KeyModifiers::SUPER) => app.cursor = 0,
@@ -331,6 +338,17 @@ fn spawn_queries(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
         return;
     };
     app.auto_refresh = true;
+    app.next_poll = None;
+    spawn_round(tx, round);
+}
+
+/// Re-run the checked domain with the current record-type/ECS selection —
+/// Tab and Ctrl+N refresh the table as they cycle; inert before the first
+/// query.
+fn requery_selection(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
+    let Some(round) = app.begin_reselect() else {
+        return;
+    };
     app.next_poll = None;
     spawn_round(tx, round);
 }
