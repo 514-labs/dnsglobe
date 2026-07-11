@@ -1,6 +1,7 @@
 //! Optional TOML config file that adds resolvers to the built-in list, or
 //! replaces the list entirely (e.g. to check propagation across your own
-//! infrastructure, or an internal split-horizon zone).
+//! infrastructure, or an internal split-horizon zone), and recolors the UI
+//! via a `[theme]` table.
 //!
 //! Looked up at `$DNSGLOBE_CONFIG`, else `$XDG_CONFIG_HOME/dnsglobe/config.toml`,
 //! else `~/.config/dnsglobe/config.toml`. A missing default file just means
@@ -14,6 +15,7 @@ use serde::Deserialize;
 
 use crate::app::ViewMode;
 use crate::resolvers::{self, Resolver};
+use crate::theme::{self, Theme};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,7 +27,27 @@ pub struct Config {
     /// Preferred map panel style; the --view flag overrides it.
     view: Option<ViewMode>,
     #[serde(default)]
+    theme: ThemeTable,
+    #[serde(default)]
     resolvers: Vec<Entry>,
+}
+
+/// Raw `[theme]` colors as written in the file; validated into a
+/// `theme::Theme` by `build_theme`. Every key is optional — unset roles keep
+/// their defaults, so a theme can adjust a single color.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemeTable {
+    accent: Option<String>,
+    agree: Option<String>,
+    differ: Option<String>,
+    error: Option<String>,
+    pending: Option<String>,
+    stale: Option<String>,
+    upstream: Option<String>,
+    muted: Option<String>,
+    coastline: Option<String>,
+    grid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +68,7 @@ struct Entry {
 pub struct Settings {
     pub resolvers: Vec<Resolver>,
     pub view: Option<ViewMode>,
+    pub theme: Theme,
 }
 
 impl Settings {
@@ -53,6 +76,7 @@ impl Settings {
         Self {
             resolvers: resolvers::defaults(),
             view: None,
+            theme: Theme::default(),
         }
     }
 }
@@ -76,12 +100,18 @@ pub fn load() -> Result<Settings> {
             return Err(err).with_context(|| format!("reading config file {}", path.display()));
         }
     };
-    let config: Config =
+    let mut config: Config =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let view = config.view;
+    let theme = build_theme(std::mem::take(&mut config.theme))
+        .with_context(|| format!("invalid config {}", path.display()))?;
     let resolvers =
         resolver_list(config).with_context(|| format!("invalid config {}", path.display()))?;
-    Ok(Settings { resolvers, view })
+    Ok(Settings {
+        resolvers,
+        view,
+        theme,
+    })
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -90,6 +120,31 @@ fn default_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     Some(base.join("dnsglobe").join("config.toml"))
+}
+
+/// Overlay the config's `[theme]` colors on the defaults, erroring with the
+/// offending key so a typo'd color is easy to find in the file.
+fn build_theme(table: ThemeTable) -> Result<Theme> {
+    let mut out = Theme::default();
+    for (key, value, slot) in [
+        ("accent", table.accent, &mut out.accent),
+        ("agree", table.agree, &mut out.agree),
+        ("differ", table.differ, &mut out.differ),
+        ("error", table.error, &mut out.error),
+        ("pending", table.pending, &mut out.pending),
+        ("stale", table.stale, &mut out.stale),
+        ("upstream", table.upstream, &mut out.upstream),
+        ("coastline", table.coastline, &mut out.coastline),
+        ("grid", table.grid, &mut out.grid),
+    ] {
+        if let Some(value) = value {
+            *slot = theme::parse_color(&value).with_context(|| format!("theme.{key}"))?;
+        }
+    }
+    if let Some(value) = table.muted {
+        out.muted = theme::parse_muted(&value).context("theme.muted")?;
+    }
+    Ok(out)
 }
 
 /// Validate the config and merge it with the built-in list.
@@ -257,6 +312,48 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.view, None);
         assert!(toml::from_str::<Config>("view = \"sphere\"").is_err());
+    }
+
+    fn theme(toml_text: &str) -> Result<Theme> {
+        let config: Config = toml::from_str(toml_text)?;
+        build_theme(config.theme)
+    }
+
+    #[test]
+    fn missing_or_empty_theme_keeps_the_defaults() {
+        assert_eq!(theme("").unwrap(), Theme::default());
+        assert_eq!(theme("[theme]").unwrap(), Theme::default());
+    }
+
+    #[test]
+    fn theme_overrides_only_the_given_roles() {
+        let theme = theme(
+            r##"
+            [theme]
+            accent = "#ff8700"
+            muted = "darkgray"
+            "##,
+        )
+        .unwrap();
+        assert_eq!(theme.accent, ratatui::style::Color::Rgb(0xff, 0x87, 0x00));
+        assert_eq!(
+            theme.muted,
+            crate::theme::Muted::Color(ratatui::style::Color::DarkGray)
+        );
+        assert_eq!(theme.agree, Theme::default().agree);
+    }
+
+    #[test]
+    fn bad_theme_color_errors_with_the_key_name() {
+        let err = theme("[theme]\nstale = \"ornage\"").unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(chain.contains("theme.stale"), "{chain}");
+        assert!(chain.contains("\"ornage\""), "{chain}");
+    }
+
+    #[test]
+    fn unknown_theme_keys_are_rejected_to_catch_typos() {
+        assert!(toml::from_str::<Config>("[theme]\naccnt = \"red\"").is_err());
     }
 
     #[test]

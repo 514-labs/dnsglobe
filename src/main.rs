@@ -4,6 +4,7 @@ mod dns;
 mod globe;
 mod resolvers;
 mod sites;
+mod theme;
 mod ui;
 mod world_data;
 
@@ -35,7 +36,14 @@ Configuration:
   ip = \"10.0.0.53\"       # required, IPv4 or IPv6
   location = \"HQ\"        # optional; shown in the Loc column
   lat = 40.7             # optional map position;
-  lon = -74.0            # give both or neither";
+  lon = -74.0            # give both or neither
+
+  [theme]                # optional; override any UI color role
+  # accent = \"lightcyan\" # roles: accent, agree, differ, error, pending,
+  # stale = \"208\"        #   stale, upstream, muted, coastline, grid
+  # muted = \"faint\"      # colors: ANSI names (\"lightred\"), 256-color
+  #                      #   indexes (\"208\"), or hex (\"#ff8700\"); `muted`
+  #                      #   also takes \"faint\" (dim the default foreground)";
 
 /// Global DNS propagation checker TUI — watch a DNS record propagate across
 /// public resolvers worldwide, on a world map in your terminal.
@@ -86,6 +94,7 @@ async fn main() -> Result<()> {
     let settings = config::load()?;
     let view = cli.view.or(settings.view).unwrap_or_default();
     resolvers::init(settings.resolvers);
+    theme::init(settings.theme);
 
     // `--once` runs a single check and prints plain text — handy for scripts
     // and for testing without a TTY.

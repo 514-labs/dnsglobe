@@ -26,6 +26,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   releases can be pinned via git tag (`github:514-labs/dnsglobe/v0.3.0`).
   A `devbox.json` is included for reproducible development environments.
   ([#10](https://github.com/514-labs/dnsglobe/issues/10))
+- Custom color themes: a `[theme]` table in the config file recolors any UI
+  role (`accent`, `agree`, `differ`, `error`, `pending`, `stale`,
+  `upstream`, `muted`, `coastline`, `grid`) using ANSI color names,
+  256-color indexes, or hex values.
+  ([#27](https://github.com/514-labs/dnsglobe/pull/27))
+
+### Changed
+
+- The default palette now stays legible on terminal themes with mid-toned
+  backgrounds, like macOS Terminal's "Ocean": de-emphasized text uses the
+  faint attribute instead of dark gray (dimming your theme's own foreground
+  color, which is always readable), and status colors moved to the bright
+  ANSI range. Past-TTL is now orange to stay distinct from the brighter
+  error red. Set `muted = "darkgray"` in `[theme]` to restore the old
+  de-emphasis on terminals that render faint poorly.
+  ([#25](https://github.com/514-labs/dnsglobe/issues/25),
+  [#27](https://github.com/514-labs/dnsglobe/pull/27))
 
 ## [0.3.1] - 2026-07-06
 

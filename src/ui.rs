@@ -11,23 +11,15 @@ use crate::app::{
     ADVISORY_TTL, App, RECORD_TYPES, RowState, SPINNER, Summary, TtlVerdict, fmt_secs,
 };
 use crate::dns::QueryResult;
+use crate::theme;
 use crate::{globe, resolvers, world_data};
 
-const ACCENT: Color = Color::Cyan;
 /// Table needs ~103 cols; only show the flat map when there's room for both.
 const MIN_WIDTH_FOR_MAP: u16 = 157;
 /// The square-ish globe panel stays legible much narrower than the flat map,
 /// so it appears on terminals the flat map would have left map-less.
 const MIN_WIDTH_FOR_GLOBE: u16 = TABLE_WIDTH + 28;
 const TABLE_WIDTH: u16 = 103;
-/// Dot/status color for a cache serving an answer past its own TTL.
-const STALE_COLOR: Color = Color::LightRed;
-/// Dot/status color for "refetched but upstream still serves the old data".
-const UPSTREAM_COLOR: Color = Color::LightBlue;
-/// Globe graticule and limb: dimmer than the DarkGray coastline so the
-/// continents stay in front. Indexed so it degrades to something readable on
-/// 256-color terminals; true 8-color ones will approximate.
-const GRID_COLOR: Color = Color::Indexed(238);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let summary = app.summary();
@@ -102,28 +94,29 @@ fn ttl_advisory(app: &App, summary: &Summary, complete: bool) -> Option<String> 
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let th = theme::active();
     let (before, after) = app.domain.split_at(app.cursor.min(app.domain.len()));
     let input = Line::from(vec![
-        Span::styled(" Domain: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(" Domain: ", th.muted.style()),
         Span::styled(before, Style::new().bold()),
-        Span::styled("▏", Style::new().fg(ACCENT)),
+        Span::styled("▏", Style::new().fg(th.accent)),
         Span::styled(after, Style::new().bold()),
     ]);
 
-    let mut types = vec![Span::styled(" Type:   ", Style::new().fg(Color::DarkGray))];
+    let mut types = vec![Span::styled(" Type:   ", th.muted.style())];
     for (i, rtype) in RECORD_TYPES.iter().enumerate() {
         let label = format!(" {rtype} ");
         types.push(if i == app.rtype_idx {
-            Span::styled(label, Style::new().fg(Color::Black).bg(ACCENT).bold())
+            Span::styled(label, Style::new().fg(Color::Black).bg(th.accent).bold())
         } else {
-            Span::styled(label, Style::new().fg(Color::DarkGray))
+            Span::styled(label, th.muted.style())
         });
         types.push(Span::raw(" "));
     }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(ACCENT))
+        .border_style(Style::new().fg(th.accent))
         .title(" 🌍 DNS Propagation Checker ")
         .title_style(Style::new().bold());
     frame.render_widget(
@@ -133,12 +126,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
+    let th = theme::active();
     let total = resolvers::active().len();
 
     if app.queried.is_none() {
         let hint = Paragraph::new(Line::from(Span::styled(
             "  type a domain and press Enter",
-            Style::new().fg(Color::DarkGray).italic(),
+            th.muted.style().italic(),
         )));
         frame.render_widget(hint, area);
         return;
@@ -147,7 +141,7 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
     let (ratio, color, label) = if app.in_flight() {
         (
             summary.done as f64 / total as f64,
-            ACCENT,
+            th.accent,
             format!(
                 "{} checking… {}/{} ",
                 SPINNER[app.spinner_frame % SPINNER.len()],
@@ -159,11 +153,11 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         let responding = summary.responding.max(1);
         let ratio = summary.agree as f64 / responding as f64;
         let color = if ratio >= 0.9 {
-            Color::Green
+            th.agree
         } else if ratio >= 0.5 {
-            Color::Yellow
+            th.pending
         } else {
-            Color::Red
+            th.error
         };
         let mut label = format!(
             " propagation {}/{} ({:.0}%)",
@@ -204,15 +198,16 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
         .ratio(ratio)
         .label(label)
         .filled_style(Style::new().fg(color).add_modifier(Modifier::BOLD))
-        .unfilled_style(Style::new().fg(Color::DarkGray));
+        .unfilled_style(th.muted.style());
     frame.render_widget(gauge, area);
 }
 
 fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, area: Rect) {
+    let th = theme::active();
     let header = Row::new([
         "Resolver", "Loc", "IP", "Time", "TTL", "Exp", "Status", "Answer",
     ])
-    .style(Style::new().fg(ACCENT).bold());
+    .style(Style::new().fg(th.accent).bold());
     let now = Instant::now();
 
     let rows = app
@@ -225,7 +220,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                     Cell::from("—"),
                     Cell::from(""),
                     Cell::from(""),
-                    Cell::from(Span::styled("idle", Style::new().fg(Color::DarkGray))),
+                    Cell::from(Span::styled("idle", th.muted.style())),
                     Cell::from(""),
                 ),
                 RowState::Pending => (
@@ -234,7 +229,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                     Cell::from(""),
                     Cell::from(Span::styled(
                         format!("{} query", SPINNER[app.spinner_frame % SPINNER.len()]),
-                        Style::new().fg(Color::Yellow),
+                        Style::new().fg(th.pending),
                     )),
                     Cell::from(""),
                 ),
@@ -243,11 +238,11 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                 } => {
                     let ms = elapsed.as_millis();
                     let time_style = if ms < 100 {
-                        Style::new().fg(Color::Green)
+                        Style::new().fg(th.agree)
                     } else if ms < 400 {
-                        Style::new().fg(Color::Yellow)
+                        Style::new().fg(th.pending)
                     } else {
-                        Style::new().fg(Color::Red)
+                        Style::new().fg(th.error)
                     };
                     let time = Cell::from(Span::styled(format!("{ms}ms"), time_style));
                     match result {
@@ -260,15 +255,15 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                             };
                             let (status, style) = match verdict {
                                 Some(TtlVerdict::PastTtl) => {
-                                    ("! PAST TTL", Style::new().fg(STALE_COLOR).bold())
+                                    ("! PAST TTL", Style::new().fg(th.stale).bold())
                                 }
                                 Some(TtlVerdict::Upstream) => {
-                                    ("↻ UPSTREAM", Style::new().fg(UPSTREAM_COLOR).bold())
+                                    ("↻ UPSTREAM", Style::new().fg(th.upstream).bold())
                                 }
                                 None if matches_majority => {
-                                    ("✓ OK", Style::new().fg(Color::Green).bold())
+                                    ("✓ OK", Style::new().fg(th.agree).bold())
                                 }
-                                None => ("≠ DIFFERS", Style::new().fg(Color::Magenta).bold()),
+                                None => ("≠ DIFFERS", Style::new().fg(th.differ).bold()),
                             };
                             // Live countdown to the moment this cache entry
                             // must be refetched. For disagreeing rows this is
@@ -276,9 +271,9 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                             // here", so it carries the status color.
                             let remaining = state.remaining_ttl(now).unwrap_or_default().as_secs();
                             let exp = if remaining == 0 {
-                                Span::styled("expired", Style::new().fg(Color::DarkGray).italic())
+                                Span::styled("expired", th.muted.style().italic())
                             } else if matches_majority {
-                                Span::styled(fmt_secs(remaining), Style::new().fg(Color::DarkGray))
+                                Span::styled(fmt_secs(remaining), th.muted.style())
                             } else {
                                 Span::styled(fmt_secs(remaining), style)
                             };
@@ -292,7 +287,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                                     if matches_majority {
                                         Style::new()
                                     } else {
-                                        Style::new().fg(style.fg.unwrap_or(Color::Magenta))
+                                        Style::new().fg(style.fg.unwrap_or(th.differ))
                                     },
                                 )),
                             )
@@ -301,8 +296,8 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                             time,
                             Cell::from(""),
                             Cell::from(""),
-                            Cell::from(Span::styled("∅ NONE", Style::new().fg(Color::Red).bold())),
-                            Cell::from(Span::styled(code.clone(), Style::new().fg(Color::Red))),
+                            Cell::from(Span::styled("∅ NONE", Style::new().fg(th.error).bold())),
+                            Cell::from(Span::styled(code.clone(), Style::new().fg(th.error))),
                         ),
                         QueryResult::ServFail => (
                             time,
@@ -310,21 +305,21 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                             Cell::from(""),
                             Cell::from(Span::styled(
                                 "✗ SERVFAIL",
-                                Style::new().fg(Color::Red).bold(),
+                                Style::new().fg(th.error).bold(),
                             )),
                             Cell::from(Span::styled(
                                 "can't resolve — broken delegation or DNSSEC?",
-                                Style::new().fg(Color::Red),
+                                Style::new().fg(th.error),
                             )),
                         ),
                         QueryResult::Error(message) => (
                             time,
                             Cell::from(""),
                             Cell::from(""),
-                            Cell::from(Span::styled("✗ ERR", Style::new().fg(Color::Red).bold())),
+                            Cell::from(Span::styled("✗ ERR", Style::new().fg(th.error).bold())),
                             Cell::from(Span::styled(
                                 message.clone(),
-                                Style::new().fg(Color::Red).italic(),
+                                Style::new().fg(th.error).italic(),
                             )),
                         ),
                     }
@@ -335,20 +330,14 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
             let loc_cell = match &app.sites[i] {
                 Some(site) => Cell::from(Span::styled(
                     format!("→{}", site.code),
-                    Style::new().fg(ACCENT),
+                    Style::new().fg(th.accent),
                 )),
-                None => Cell::from(Span::styled(
-                    resolver.location.as_str(),
-                    Style::new().fg(Color::DarkGray),
-                )),
+                None => Cell::from(Span::styled(resolver.location.as_str(), th.muted.style())),
             };
             Row::new(vec![
                 Cell::from(resolver.name.as_str()),
                 loc_cell,
-                Cell::from(Span::styled(
-                    resolver.ip.to_string(),
-                    Style::new().fg(Color::DarkGray),
-                )),
+                Cell::from(Span::styled(resolver.ip.to_string(), th.muted.style())),
                 time_cell,
                 ttl_cell,
                 exp_cell,
@@ -375,7 +364,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::DarkGray))
+            .border_style(th.muted.style())
             .title_bottom(
                 Line::from(format!(
                     " sort: {} (Ctrl+S) · {} resolvers (↑/↓ scroll) ",
@@ -383,7 +372,7 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
                     resolvers::active().len()
                 ))
                 .right_aligned()
-                .style(Style::new().fg(Color::DarkGray)),
+                .style(th.muted.style()),
             ),
     );
 
@@ -413,17 +402,18 @@ impl MorphedWorld {
 
 impl Shape for MorphedWorld {
     fn draw(&self, painter: &mut Painter) {
+        let th = theme::active();
         // Graticule first so land overdraws it. It carries the spin where
         // there's no coastline (the Pacific hemisphere is nearly all water)
         // and, mid-morph, shows the map's grid curling into a sphere.
         for meridian in (-180..180).step_by(30) {
             for lat in (-80..=80).step_by(2) {
-                self.paint(painter, f64::from(meridian), f64::from(lat), GRID_COLOR);
+                self.paint(painter, f64::from(meridian), f64::from(lat), th.grid);
             }
         }
         for parallel in (-60..=60).step_by(30) {
             for lon in (-180..180).step_by(2) {
-                self.paint(painter, f64::from(lon), f64::from(parallel), GRID_COLOR);
+                self.paint(painter, f64::from(lon), f64::from(parallel), th.grid);
             }
         }
         // The limb only exists on the sphere — fade it in near the end of
@@ -435,12 +425,12 @@ impl Shape for MorphedWorld {
                     globe::CENTER_X + globe::RADIUS * a.cos(),
                     globe::CENTER_Y + globe::RADIUS * a.sin(),
                 ) {
-                    painter.paint(px, py, GRID_COLOR);
+                    painter.paint(px, py, th.grid);
                 }
             }
         }
         for &(lon, lat) in &world_data::WORLD {
-            self.paint(painter, lon, lat, Color::DarkGray);
+            self.paint(painter, lon, lat, th.coastline);
         }
     }
 }
@@ -453,6 +443,7 @@ fn draw_map(
     geom: &globe::PanelGeom,
     area: Rect,
 ) {
+    let th = theme::active();
     let now = Instant::now();
     // Layout and projection share geom.t so the zoom tracks the morph.
     let t = geom.t;
@@ -461,13 +452,13 @@ fn draw_map(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::new().fg(Color::DarkGray))
+                .border_style(th.muted.style())
                 .title(if t > 0.5 {
                     " Resolver Globe "
                 } else {
                     " Resolver Map "
                 })
-                .title_style(Style::new().fg(ACCENT).bold()),
+                .title_style(Style::new().fg(th.accent).bold()),
         )
         .x_bounds(geom.x_bounds())
         .y_bounds(geom.y_bounds())
@@ -476,7 +467,7 @@ fn draw_map(
                 ctx.draw(&MorphedWorld { t, center_lon });
             } else {
                 ctx.draw(&Map {
-                    color: Color::DarkGray,
+                    color: th.coastline,
                     resolution: MapResolution::High,
                 });
             }
@@ -491,27 +482,29 @@ fn draw_map(
                 let Some((x, y)) = globe::project(lon, lat, center_lon, t) else {
                     continue;
                 };
-                let color = match state {
-                    RowState::Idle => Color::DarkGray,
-                    RowState::Pending => Color::Yellow,
-                    RowState::Done { result, .. } => match result {
+                let style = match state {
+                    // Faint has no color to give a dot, so idle dots take
+                    // the whole muted style instead of an fg like the rest.
+                    RowState::Idle => th.muted.style(),
+                    RowState::Pending => Style::new().fg(th.pending),
+                    RowState::Done { result, .. } => Style::new().fg(match result {
                         QueryResult::Records { .. } => {
                             if !complete || summary.majority_rows[i] {
-                                Color::Green
+                                th.agree
                             } else {
                                 match app.ttl_verdict(i, now) {
-                                    Some(TtlVerdict::PastTtl) => STALE_COLOR,
-                                    Some(TtlVerdict::Upstream) => UPSTREAM_COLOR,
-                                    None => Color::Magenta,
+                                    Some(TtlVerdict::PastTtl) => th.stale,
+                                    Some(TtlVerdict::Upstream) => th.upstream,
+                                    None => th.differ,
                                 }
                             }
                         }
                         QueryResult::NoRecords(_)
                         | QueryResult::ServFail
-                        | QueryResult::Error(_) => Color::Red,
-                    },
+                        | QueryResult::Error(_) => th.error,
+                    }),
                 };
-                ctx.print(x, y, Span::styled("●", Style::new().fg(color).bold()));
+                ctx.print(x, y, Span::styled("●", style.bold()));
             }
         });
     frame.render_widget(canvas, area);
@@ -521,13 +514,14 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
     if area.height < 3 {
         return;
     }
+    let th = theme::active();
     let mut lines = vec![Line::from(vec![
-        Span::styled("● agrees  ", Style::new().fg(Color::Green)),
-        Span::styled("● differs  ", Style::new().fg(Color::Magenta)),
-        Span::styled("● past-ttl  ", Style::new().fg(STALE_COLOR)),
-        Span::styled("● upstream  ", Style::new().fg(UPSTREAM_COLOR)),
-        Span::styled("● error  ", Style::new().fg(Color::Red)),
-        Span::styled("● pending", Style::new().fg(Color::Yellow)),
+        Span::styled("● agrees  ", Style::new().fg(th.agree)),
+        Span::styled("● differs  ", Style::new().fg(th.differ)),
+        Span::styled("● past-ttl  ", Style::new().fg(th.stale)),
+        Span::styled("● upstream  ", Style::new().fg(th.upstream)),
+        Span::styled("● error  ", Style::new().fg(th.error)),
+        Span::styled("● pending", Style::new().fg(th.pending)),
     ])];
     if complete && !summary.majority_values.is_empty() {
         lines.push(Line::default());
@@ -537,11 +531,11 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
                 summary.agree,
                 resolvers::active().len()
             ),
-            Style::new().fg(ACCENT).bold(),
+            Style::new().fg(th.accent).bold(),
         )));
         for value in &summary.majority_values {
             lines.push(Line::from(vec![
-                Span::styled("  • ", Style::new().fg(Color::DarkGray)),
+                Span::styled("  • ", th.muted.style()),
                 Span::raw(value.as_str()),
             ]));
         }
@@ -549,12 +543,12 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             "waiting for all resolvers…",
-            Style::new().fg(Color::DarkGray).italic(),
+            th.muted.style().italic(),
         )));
     }
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(Color::DarkGray));
+        .border_style(th.muted.style());
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
@@ -570,6 +564,7 @@ fn draw_footer(
     advisory: Option<String>,
     area: Rect,
 ) {
+    let th = theme::active();
     let mut status = Line::default();
     if let Some((domain, rtype)) = &app.queried {
         status.push_span(Span::styled(
@@ -578,41 +573,41 @@ fn draw_footer(
         ));
         status.push_span(Span::styled(
             format!("{} ok", summary.ok),
-            Style::new().fg(Color::Green),
+            Style::new().fg(th.agree),
         ));
         status.push_span(Span::raw(" · "));
         status.push_span(Span::styled(
             format!("{} none", summary.no_records),
-            Style::new().fg(Color::Red),
+            Style::new().fg(th.error),
         ));
         status.push_span(Span::raw(" · "));
         status.push_span(Span::styled(
             format!("{} servfail", summary.servfail),
-            Style::new().fg(Color::Red),
+            Style::new().fg(th.error),
         ));
         status.push_span(Span::raw(" · "));
         status.push_span(Span::styled(
             format!("{} err", summary.errors),
-            Style::new().fg(Color::Red),
+            Style::new().fg(th.error),
         ));
         status.push_span(Span::raw(" · "));
         status.push_span(Span::styled(
             format!("{} answer group(s)", summary.groups),
             if summary.groups > 1 {
-                Style::new().fg(Color::Magenta)
+                Style::new().fg(th.differ)
             } else {
-                Style::new().fg(Color::DarkGray)
+                th.muted.style()
             },
         ));
     }
     let keys = Line::from(Span::styled(
         " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Ctrl+O globe/map · Tab record type · ↑/↓ scroll · Esc quit",
-        Style::new().fg(Color::DarkGray),
+        th.muted.style(),
     ));
     if let Some(advisory) = advisory {
         let advisory_line = Line::from(vec![
-            Span::styled(" ℹ ", Style::new().fg(ACCENT)),
-            Span::styled(advisory, Style::new().fg(Color::DarkGray).italic()),
+            Span::styled(" ℹ ", Style::new().fg(th.accent)),
+            Span::styled(advisory, th.muted.style().italic()),
         ]);
         let [advisory_area, status_area, keys_area] = Layout::vertical([
             Constraint::Length(1),

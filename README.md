@@ -97,10 +97,28 @@ lon = -74.0              #            omit both to leave it off the map
 [[resolvers]]
 name = "NS1 (public)"
 ip = "198.51.100.53"
+
+# Optionally recolor the UI. Every key is optional; unset roles keep their
+# defaults. Colors are ANSI names ("lightcyan"), 256-color indexes ("208"),
+# or hex ("#ff8700" — needs truecolor support).
+[theme]
+accent   = "lightcyan"    # borders, titles, cursor, anycast sites
+agree    = "lightgreen"   # answers matching the majority; fast latency
+differ   = "lightmagenta" # answers disagreeing with the majority
+error    = "lightred"     # ERR / SERVFAIL / NONE; slow latency
+pending  = "lightyellow"  # queries in flight; middling latency
+stale    = "208"          # caches serving an answer past its own TTL
+upstream = "lightblue"    # refetched but upstream still has the old data
+muted    = "faint"        # labels, hints, countdowns, quiet borders —
+                          # "faint" dims your terminal's default foreground;
+                          # set a color if your terminal renders faint poorly
+coastline = "gray"        # map/globe land outline
+grid      = "244"         # globe graticule and limb
 ```
 
-Invalid config (bad IP, unknown key, `lat` without `lon`, `replace = true`
-with no resolvers) is reported at startup with the offending entry named.
+Invalid config (bad IP, unknown key, unrecognized color, `lat` without
+`lon`, `replace = true` with no resolvers) is reported at startup with the
+offending entry named.
 
 ## Notes
 
