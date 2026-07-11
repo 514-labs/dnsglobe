@@ -9,7 +9,7 @@
 queries 34 public DNS resolvers around the world in parallel, compares their
 answers, and shows the propagation of your record on a world map.
 
-![dnsglobe demo — checking A and NS records for a domain across 34 resolvers worldwide, then morphing the world map into a rotating globe](demo/demo.gif)
+![dnsglobe demo — checking A and NS records for a domain across 34 resolvers worldwide with EDNS Client Subnet, cycling the client subnet, then morphing the world map into a rotating globe](demo/demo.gif)
 
 Think dnschecker.org / whatsmydns.net, but in your terminal, with watch mode:
 start a check and it re-polls until the record has propagated everywhere.
