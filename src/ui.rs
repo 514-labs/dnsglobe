@@ -88,7 +88,7 @@ fn info_rows(app: &App, summary: &Summary, complete: bool) -> u16 {
     if complete && !summary.majority_values.is_empty() {
         // Blank + heading + one row per value, capped so a many-valued
         // record (TXT, round-robin pools) doesn't crush the globe.
-        legend + 2 + summary.majority_values.len().min(4) as u16
+        legend + 2 + summary.majority_values.len().min(20) as u16
     } else if app.queried.is_some() && app.in_flight() {
         legend + 2 // blank + "waiting for all resolvers…"
     } else {
@@ -667,7 +667,7 @@ mod tests {
         assert_eq!(info_rows(&app, &summary, true), 8);
 
         // …capped so a many-valued record doesn't crush the globe.
-        summary.majority_values = vec!["v".into(); 20];
-        assert_eq!(info_rows(&app, &summary, true), 10);
+        summary.majority_values = vec!["v".into(); 30];
+        assert_eq!(info_rows(&app, &summary, true), 26);
     }
 }
