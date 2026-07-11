@@ -385,8 +385,8 @@ impl App {
     }
 
     /// Ctrl+N: step the selection through the configured subnets plus an
-    /// "off" position. Like Tab for the record type, this only changes the
-    /// selection — a query fires when the user presses Enter, never here.
+    /// "off" position. The caller follows up with `begin_ecs_requery` so the
+    /// table refreshes for the new subnet without waiting for Enter.
     pub fn cycle_ecs(&mut self) {
         if self.ecs_list.is_empty() {
             return;
@@ -405,18 +405,37 @@ impl App {
         if domain.is_empty() {
             return None;
         }
+        Some(self.arm_round(domain, self.record_type()))
+    }
+
+    /// Arm a fresh round for the already-queried domain/type with the
+    /// current ECS selection: Ctrl+N re-queries as it cycles. Reads
+    /// `queried`, not the (possibly mid-edit) input field, and does nothing
+    /// before the first query — there's nothing to refresh yet.
+    pub fn begin_ecs_requery(&mut self) -> Option<Round> {
+        if self.ecs_list.is_empty() {
+            return None;
+        }
+        let (domain, rtype, _) = self.queried.clone()?;
+        Some(self.arm_round(domain, rtype))
+    }
+
+    /// Reset every row and start a round of all resolvers, capturing the
+    /// active ECS selection. History clears too: answers under a different
+    /// subnet aren't comparable across polls.
+    fn arm_round(&mut self, domain: String, rtype: RecordType) -> Round {
         self.generation += 1;
         self.rows = vec![RowState::Pending; resolvers::active().len()];
         self.history = vec![VecDeque::new(); resolvers::active().len()];
         let ecs = self.active_ecs();
-        self.queried = Some((domain.clone(), self.record_type(), ecs));
-        Some(Round {
+        self.queried = Some((domain.clone(), rtype, ecs));
+        Round {
             domain,
-            rtype: self.record_type(),
+            rtype,
             ecs,
             generation: self.generation,
             indices: (0..self.rows.len()).collect(),
-        })
+        }
     }
 
     /// Arm a poll of the last-queried domain/type, ignoring the (possibly
@@ -426,9 +445,10 @@ impl App {
     /// picked up again once it hits zero — so an old-value *majority* still
     /// gets re-checked and can flip.
     pub fn begin_requery(&mut self) -> Option<Round> {
-        // Re-polls stay on the queried round's ECS subnet even if the user
-        // has cycled the selection since — mixing subnets within one table
-        // would make the group comparison meaningless.
+        // Re-polls stay on the queried round's ECS subnet (Ctrl+N re-arms
+        // `queried` via begin_ecs_requery, so the two can't drift) — mixing
+        // subnets within one table would make the group comparison
+        // meaningless.
         let (domain, rtype, ecs) = self.queried.clone()?;
         let summary = self.summary();
         let now = Instant::now();
@@ -1169,8 +1189,9 @@ mod tests {
         let round = app.begin_query().unwrap();
         assert_eq!(round.ecs, Some(subnet));
 
-        // Cycling to "off" mid-watch must not switch what re-polls query:
-        // mixing subnets within one table would break the group comparison.
+        // If a watch poll fires between cycling and the Ctrl+N requery, it
+        // must stay on the queried round's subnet: mixing subnets within
+        // one table would break the group comparison.
         app.cycle_ecs();
         assert_eq!(app.active_ecs(), None);
         let round = app.begin_requery().unwrap();
@@ -1178,6 +1199,36 @@ mod tests {
         // A fresh Enter picks up the new selection.
         let round = app.begin_query().unwrap();
         assert_eq!(round.ecs, None);
+    }
+
+    #[test]
+    fn ctrl_n_requeries_the_queried_domain_with_the_new_subnet() {
+        let list = vec![
+            crate::dns::parse_ecs("203.0.113.0/24").unwrap(),
+            crate::dns::parse_ecs("198.51.100.0/24").unwrap(),
+        ];
+        let mut app = App::new("example.com".into());
+        app.set_ecs_list(list.clone());
+
+        // Before any query there's nothing to refresh: cycling alone.
+        app.cycle_ecs();
+        assert!(app.begin_ecs_requery().is_none());
+        app.cycle_ecs(); // back around: off
+        app.cycle_ecs(); // first subnet again
+        assert_eq!(app.active_ecs(), Some(list[0]));
+
+        let first = app.begin_query().unwrap();
+        // Ctrl+N: cycle, then a fresh full round on the *queried* domain —
+        // even while the input field is mid-edit.
+        app.insert_char('x');
+        app.cycle_ecs();
+        let round = app.begin_ecs_requery().unwrap();
+        assert_eq!(round.domain, "example.com");
+        assert_eq!(round.ecs, Some(list[1]));
+        assert!(round.generation > first.generation);
+        assert_eq!(round.indices.len(), resolvers::active().len());
+        // The new round is what re-polls now follow.
+        assert_eq!(app.queried.as_ref().unwrap().2, Some(list[1]));
     }
 
     #[test]

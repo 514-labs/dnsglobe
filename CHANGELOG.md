@@ -13,8 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   query, so GeoDNS zones answer for that network instead of each resolver's
   own vantage point. Takes CIDRs or bare IPs, and accepts several subnets to
   compare how answers converge across client networks: Ctrl+N cycles the
-  active subnet in the TUI, and `--once` prints one table per subnet plus a
-  convergence summary. Resolvers that deliberately ignore ECS (Cloudflare,
+  active subnet in the TUI (re-querying as it goes), and `--once` prints one
+  table per subnet plus a convergence summary. Resolvers that deliberately ignore ECS (Cloudflare,
   Quad9, …) are tagged `NO ECS` and left out of the propagation percentage —
   their answer describes their own location, not the probed network.
   ([#14](https://github.com/514-labs/dnsglobe/issues/14),

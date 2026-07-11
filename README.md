@@ -71,8 +71,8 @@ option ([RFC 7871](https://datatracker.ietf.org/doc/html/rfc7871)) to every
 query, so GeoDNS zones answer for that client network instead of the
 resolver's own vantage point. Subnets are CIDRs or bare IPs; most public
 resolvers use at most /24 (IPv4) or /56 (IPv6). With several subnets
-configured, Ctrl+N cycles the active one (plus an *off* position) and the
-next Enter queries with it; `--once` runs every subnet and ends with a
+configured, Ctrl+N cycles the active one (plus an *off* position) and
+re-queries immediately; `--once` runs every subnet and ends with a
 per-subnet convergence summary. Resolvers that deliberately ignore ECS
 (Cloudflare, Quad9, …) are tagged `NO ECS` — their answer is shown for
 reference but excluded from the propagation percentage, since it describes
@@ -89,7 +89,7 @@ their own location, not the probed network.
 | Tab / Shift-Tab | select record type (A, AAAA, CNAME, MX, NS, TXT, SOA) |
 | ↑/↓ / PgUp/PgDn | scroll the resolver table |
 | Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
-| Ctrl+N         | cycle the ECS client subnet (only when `--ecs`/config set one up) |
+| Ctrl+N         | cycle the ECS client subnet and re-query (only when `--ecs`/config set one up) |
 | Ctrl+U         | clear domain                    |
 | Esc / Ctrl+C   | quit                            |
 

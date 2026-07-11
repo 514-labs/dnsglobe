@@ -258,9 +258,14 @@ fn handle_key(
             app.toggle_globe();
         }
         // Ctrl+N: next client network (Ctrl+E is taken by end-of-line).
-        // Selection only — like Tab, the query fires on Enter.
+        // Cycling re-queries right away — no Enter needed to see the new
+        // subnet's answers; before the first query it just moves the chip.
         KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.cycle_ecs();
+            if let Some(round) = app.begin_ecs_requery() {
+                app.next_poll = None;
+                spawn_round(tx, round);
+            }
         }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             if app.auto_refresh || app.next_poll.is_some() {
