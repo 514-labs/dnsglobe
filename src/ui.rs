@@ -28,8 +28,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let complete = summary.done > 0 && !app.in_flight();
 
     let advisory = ttl_advisory(app, &summary, complete);
+    // The header grows one row for the ECS line, only when --ecs/config set
+    // subnets up — an ECS-less run renders exactly as before.
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(if app.ecs_list.is_empty() { 4 } else { 5 }),
         Constraint::Min(6),
         Constraint::Length(if advisory.is_some() { 3 } else { 2 }),
     ])
@@ -132,25 +134,28 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         });
         types.push(Span::raw(" "));
     }
-    // Active client subnet, only when --ecs/config set one up — an ECS-less
-    // run renders exactly as before.
+    let mut lines = vec![input, Line::from(types)];
+    // Active client subnet on its own line, only when --ecs/config set one
+    // up — an ECS-less run renders exactly as before (the header layout in
+    // `draw` reserves the extra row on the same condition).
     if !app.ecs_list.is_empty() {
-        types.push(Span::styled("· ECS: ", th.muted.style()));
+        let mut ecs = vec![Span::styled(" ECS:    ", th.muted.style())];
         match app.ecs_sel {
             Some(i) => {
-                types.push(Span::styled(
+                ecs.push(Span::styled(
                     format!(" {} ", crate::dns::fmt_ecs(&app.ecs_list[i])),
                     Style::new().fg(Color::Black).bg(th.accent).bold(),
                 ));
                 if app.ecs_list.len() > 1 {
-                    types.push(Span::styled(
+                    ecs.push(Span::styled(
                         format!(" {}/{}", i + 1, app.ecs_list.len()),
                         th.muted.style(),
                     ));
                 }
             }
-            None => types.push(Span::styled(" off ", th.muted.style())),
+            None => ecs.push(Span::styled(" off ", th.muted.style())),
         }
+        lines.push(Line::from(ecs));
     }
 
     let block = Block::default()
@@ -158,10 +163,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::new().fg(th.accent))
         .title(" 🌍 DNS Propagation Checker ")
         .title_style(Style::new().bold());
-    frame.render_widget(
-        Paragraph::new(vec![input, Line::from(types)]).block(block),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
