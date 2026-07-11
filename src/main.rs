@@ -208,7 +208,9 @@ fn handle_key(
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.sort = app.sort.next();
         }
-        KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+        // Ctrl+O: "O" is the globe. Ctrl+G would be the natural mnemonic but
+        // it's the BEL character, which some terminal setups intercept.
+        KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_globe();
         }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {

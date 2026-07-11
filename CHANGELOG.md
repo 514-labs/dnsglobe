@@ -8,7 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- 3D rotating globe view: Ctrl+G morphs the flat resolver map into a
+- 3D rotating globe view: Ctrl+O morphs the flat resolver map into a
   spinning orthographic globe (and back), with the resolver status dots
   riding their continents and hiding on the far hemisphere as the planet
   turns. The globe keeps the map's braille rendering, adds a faint

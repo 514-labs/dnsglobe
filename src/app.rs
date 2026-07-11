@@ -166,7 +166,7 @@ pub struct App {
     pub next_poll: Option<Instant>,
     /// Active table ordering, cycled with Ctrl+S.
     pub sort: SortMode,
-    /// Flat map ↔ rotating globe, toggled with Ctrl+G.
+    /// Flat map ↔ rotating globe, toggled with Ctrl+O.
     pub globe: GlobeView,
     /// Per-resolver anycast site discovered by that operator's identification
     /// query (issue #6): which POP is actually answering us. None = no probe
