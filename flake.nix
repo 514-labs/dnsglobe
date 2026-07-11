@@ -16,7 +16,8 @@
         pkgs = nixpkgs.legacyPackages.${system};
         dnsglobe = pkgs.rustPlatform.buildRustPackage {
           pname = "dnsglobe";
-          version = "0.3.0";
+          # Track Cargo.toml so version-bump PRs don't have to touch the flake.
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
