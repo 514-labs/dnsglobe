@@ -40,8 +40,6 @@ pub const MAP_LAT_SPAN: f64 = 127.0;
 /// filling available height is what keeps the continents recognizable.
 pub const MAP_ASPECT: f64 = MAP_LAT_SPAN / MAP_LON_SPAN * 2.0 / 4.0;
 pub const MAP_MAX_WIDTH: u16 = 170;
-/// Panel rows kept below the globe for the legend/majority-answer box.
-const INFO_RESERVE: u16 = 4;
 
 /// Map panel dimensions and canvas zoom, all interpolated by the morph so
 /// the panel itself reshapes with the transition.
@@ -66,21 +64,24 @@ impl PanelGeom {
 }
 
 /// Size the map panel at morph parameter `t`, given the columns available to
-/// it and the body height. The flat endpoint is the classic wide panel; the
+/// it, the body height, and the rows the info box below the globe currently
+/// needs (`info_rows`). The flat endpoint is the classic wide panel; the
 /// globe endpoint is a square dot grid (2 braille dots per cell horizontally,
 /// 4 vertically → cell height ≈ half the width) just big enough for the disc,
 /// so the globe earns its keep on narrow terminals instead of floating small
 /// inside a map-shaped canvas. Between the endpoints everything lerps:
 /// width, height, and zoom animate together with the coastline morph.
-pub fn panel_geometry(avail_width: u16, body_height: u16, t: f64) -> PanelGeom {
+pub fn panel_geometry(avail_width: u16, body_height: u16, t: f64, info_rows: u16) -> PanelGeom {
     // Floors keep the geometry sane (and division-safe) on degenerate
     // terminal sizes; ceilings are lifted to the floor so clamp can't panic.
     let flat_w = avail_width.clamp(6, MAP_MAX_WIDTH);
     let flat_h =
         ((f64::from(flat_w - 2) * MAP_ASPECT).round() as u16 + 2).clamp(4, body_height.max(4));
     // Square dot grid for the globe, height-capped so the info box below
-    // keeps its rows on wide-but-short terminals.
-    let globe_h = ((flat_w - 2) / 2 + 2).clamp(4, body_height.saturating_sub(INFO_RESERVE).max(4));
+    // keeps its rows: on terminals both wide and tall the globe would
+    // otherwise grow past body_height − info_rows and clip the majority
+    // answer out of view.
+    let globe_h = ((flat_w - 2) / 2 + 2).clamp(4, body_height.saturating_sub(info_rows).max(4));
     let globe_w = (2 * (globe_h - 2) + 2).clamp(6, flat_w);
     // Degrees per dot equal in x and y ⇒ round limb, whatever the clamps did.
     let globe_span = MAP_LAT_SPAN * f64::from(globe_w - 2) / (2.0 * f64::from(globe_h - 2));
@@ -314,7 +315,7 @@ mod tests {
 
     #[test]
     fn flat_geometry_matches_the_classic_panel() {
-        let g = panel_geometry(80, 50, 0.0);
+        let g = panel_geometry(80, 50, 0.0, 4);
         assert_eq!(g.width, 80);
         assert_eq!(g.height, (78.0 * MAP_ASPECT).round() as u16 + 2);
         assert!((g.x_span - MAP_LON_SPAN).abs() < EPS);
@@ -324,7 +325,7 @@ mod tests {
 
     #[test]
     fn globe_geometry_is_a_square_dot_grid_that_fits_the_disc() {
-        let g = panel_geometry(80, 50, 1.0);
+        let g = panel_geometry(80, 50, 1.0, 4);
         // 2 dots/cell wide × 4 tall: square grid means height ≈ width/2.
         assert_eq!(g.height, (g.width - 2) / 2 + 2);
         // Zoomed so the 127° lat span fills the panel: the disc (2×RADIUS
@@ -336,7 +337,7 @@ mod tests {
     fn short_terminals_shrink_the_globe_panel_and_keep_it_round() {
         // Height-capped: the panel narrows to stay square instead of leaving
         // the globe floating in a wide canvas.
-        let g = panel_geometry(160, 30, 1.0);
+        let g = panel_geometry(160, 30, 1.0, 4);
         assert!(g.height <= 30 - 4);
         assert_eq!(g.width, 2 * (g.height - 2) + 2);
         // Round limb invariant: degrees per dot equal in x and y.
@@ -346,9 +347,23 @@ mod tests {
     }
 
     #[test]
+    fn info_rows_shrink_a_height_capped_globe() {
+        // Wide and tall enough that only the height cap binds: every extra
+        // info row comes straight out of the globe, which stays square.
+        let legend_only = panel_geometry(160, 40, 1.0, 4);
+        let with_answers = panel_geometry(160, 40, 1.0, 9);
+        assert_eq!(legend_only.height, 40 - 4);
+        assert_eq!(with_answers.height, 40 - 9);
+        assert_eq!(with_answers.width, 2 * (with_answers.height - 2) + 2);
+        // Width-capped globes are untouched: they already leave the rows.
+        let small = panel_geometry(40, 40, 1.0, 4);
+        assert_eq!(small.height, panel_geometry(40, 40, 1.0, 9).height);
+    }
+
+    #[test]
     fn geometry_survives_degenerate_sizes() {
         for (w, h) in [(0, 0), (1, 1), (6, 4), (7, 50), (300, 2)] {
-            let g = panel_geometry(w, h, 1.0);
+            let g = panel_geometry(w, h, 1.0, 9);
             assert!(g.width >= 6 && g.height >= 4);
             assert!(g.x_span.is_finite() && g.x_span > 0.0);
         }

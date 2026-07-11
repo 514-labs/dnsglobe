@@ -45,6 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         body.width.saturating_sub(TABLE_WIDTH),
         body.height,
         app.globe.t(Instant::now()),
+        info_rows(app, &summary, complete),
     );
     let min_width = if app.globe.target() {
         MIN_WIDTH_FOR_GLOBE
@@ -75,6 +76,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_map_info(frame, app, &summary, complete, info_area);
     }
     draw_footer(frame, app, &summary, advisory, footer);
+}
+
+/// Rows to reserve below the globe for the info box, mirroring what
+/// `draw_map_info` will render: borders plus the legend (which wraps to two
+/// lines on narrow panels), plus the majority-answer block once a round has
+/// settled. Passing this into the panel geometry keeps a height-capped globe
+/// from growing over the answers on terminals both wide and tall.
+fn info_rows(app: &App, summary: &Summary, complete: bool) -> u16 {
+    let legend = 4; // two borders + the legend's up-to-two wrapped lines
+    if complete && !summary.majority_values.is_empty() {
+        // Blank + heading + one row per value, capped so a many-valued
+        // record (TXT, round-robin pools) doesn't crush the globe.
+        legend + 2 + summary.majority_values.len().min(4) as u16
+    } else if app.queried.is_some() && app.in_flight() {
+        legend + 2 // blank + "waiting for all resolvers…"
+    } else {
+        legend
+    }
 }
 
 /// One-line "lower your TTL before migrating" hint, shown once a round has
@@ -623,5 +642,32 @@ fn draw_footer(
             Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
         frame.render_widget(Paragraph::new(status), status_area);
         frame.render_widget(Paragraph::new(keys), keys_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_rows_track_what_the_info_box_will_show() {
+        let mut app = App::new("example.com".into());
+        let mut summary = app.summary();
+
+        // Nothing queried yet: just borders + legend.
+        assert_eq!(info_rows(&app, &summary, false), 4);
+
+        // Mid-round: the "waiting for all resolvers…" note needs two rows.
+        app.begin_query().unwrap();
+        assert_eq!(info_rows(&app, &summary, false), 6);
+
+        // Settled round: blank + heading + one row per majority value…
+        app.rows = vec![RowState::Idle; app.rows.len()];
+        summary.majority_values = vec!["192.0.2.1".into(), "192.0.2.2".into()];
+        assert_eq!(info_rows(&app, &summary, true), 8);
+
+        // …capped so a many-valued record doesn't crush the globe.
+        summary.majority_values = vec!["v".into(); 20];
+        assert_eq!(info_rows(&app, &summary, true), 10);
     }
 }
