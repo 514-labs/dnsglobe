@@ -14,26 +14,20 @@ use crate::dns::QueryResult;
 use crate::{globe, resolvers, world_data};
 
 const ACCENT: Color = Color::Cyan;
-/// Table needs ~103 cols; only show the map when there's room for both.
+/// Table needs ~103 cols; only show the flat map when there's room for both.
 const MIN_WIDTH_FOR_MAP: u16 = 157;
+/// The square-ish globe panel stays legible much narrower than the flat map,
+/// so it appears on terminals the flat map would have left map-less.
+const MIN_WIDTH_FOR_GLOBE: u16 = TABLE_WIDTH + 28;
 const TABLE_WIDTH: u16 = 103;
 /// Dot/status color for a cache serving an answer past its own TTL.
 const STALE_COLOR: Color = Color::LightRed;
 /// Dot/status color for "refetched but upstream still serves the old data".
 const UPSTREAM_COLOR: Color = Color::LightBlue;
-const MAP_MAX_WIDTH: u16 = 170;
 /// Globe graticule and limb: dimmer than the DarkGray coastline so the
 /// continents stay in front. Indexed so it degrades to something readable on
 /// 256-color terminals; true 8-color ones will approximate.
 const GRID_COLOR: Color = Color::Indexed(238);
-/// Map bounds: lon −170..180, lat −55..72 (poles cropped).
-const MAP_LON_SPAN: f64 = 350.0;
-const MAP_LAT_SPAN: f64 = 127.0;
-/// Rows per column that keep the projection square: braille dots are ~square
-/// in a 1:2 terminal font, and a cell is 2 dots wide × 4 tall, so
-/// rows = cols × (lat/lon span) × 2/4. Sizing the map by this instead of
-/// filling available height is what keeps the continents recognizable.
-const MAP_ASPECT: f64 = MAP_LAT_SPAN / MAP_LON_SPAN * 2.0 / 4.0;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let summary = app.summary();
@@ -51,10 +45,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_header(frame, app, header);
 
-    let (left, right) = if body.width >= MIN_WIDTH_FOR_MAP {
-        let map_width = (body.width - TABLE_WIDTH).min(MAP_MAX_WIDTH);
+    // Steer the view for this width (auto mode flips at a threshold; forced
+    // and pinned modes hold), then size the panel at the morph's current
+    // position so the panel reshapes along with the projection.
+    app.sync_view(body.width);
+    let geom = globe::panel_geometry(
+        body.width.saturating_sub(TABLE_WIDTH),
+        body.height,
+        app.globe.t(Instant::now()),
+    );
+    let min_width = if app.globe.target() {
+        MIN_WIDTH_FOR_GLOBE
+    } else {
+        MIN_WIDTH_FOR_MAP
+    };
+    let (left, right) = if body.width >= min_width {
         let [left, right] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(map_width)]).areas(body);
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(geom.width)]).areas(body);
         (left, Some(right))
     } else {
         (body, None)
@@ -69,14 +76,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .min(resolvers::active().len().saturating_sub(visible));
     draw_table(frame, app, &summary, complete, table);
     if let Some(right) = right {
-        // Height follows from width via the aspect ratio; leftover space
-        // below the map shows the majority answer in full.
-        let map_height = ((f64::from(right.width.saturating_sub(2)) * MAP_ASPECT).round() as u16)
-            .saturating_add(2)
-            .min(right.height);
+        // Leftover space below the map shows the majority answer in full.
         let [map_area, info_area] =
-            Layout::vertical([Constraint::Length(map_height), Constraint::Fill(1)]).areas(right);
-        draw_map(frame, app, &summary, complete, map_area);
+            Layout::vertical([Constraint::Length(geom.height), Constraint::Fill(1)]).areas(right);
+        draw_map(frame, app, &summary, complete, &geom, map_area);
         draw_map_info(frame, app, &summary, complete, info_area);
     }
     draw_footer(frame, app, &summary, advisory, footer);
@@ -442,9 +445,17 @@ impl Shape for MorphedWorld {
     }
 }
 
-fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, area: Rect) {
+fn draw_map(
+    frame: &mut Frame,
+    app: &App,
+    summary: &Summary,
+    complete: bool,
+    geom: &globe::PanelGeom,
+    area: Rect,
+) {
     let now = Instant::now();
-    let t = app.globe.t(now);
+    // Layout and projection share geom.t so the zoom tracks the morph.
+    let t = geom.t;
     let center_lon = app.globe.center_lon(now);
     let canvas = Canvas::default()
         .block(
@@ -458,8 +469,8 @@ fn draw_map(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, are
                 })
                 .title_style(Style::new().fg(ACCENT).bold()),
         )
-        .x_bounds([-170.0, 180.0])
-        .y_bounds([-55.0, 72.0])
+        .x_bounds(geom.x_bounds())
+        .y_bounds(geom.y_bounds())
         .paint(|ctx| {
             if t > 0.0 {
                 ctx.draw(&MorphedWorld { t, center_lon });
@@ -595,7 +606,7 @@ fn draw_footer(
         ));
     }
     let keys = Line::from(Span::styled(
-        " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Ctrl+O globe · Tab record type · ↑/↓ scroll · Esc quit",
+        " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Ctrl+O globe/map · Tab record type · ↑/↓ scroll · Esc quit",
         Style::new().fg(Color::DarkGray),
     ));
     if let Some(advisory) = advisory {

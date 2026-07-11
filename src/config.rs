@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::app::ViewMode;
 use crate::resolvers::{self, Resolver};
 
 #[derive(Debug, Default, Deserialize)]
@@ -21,6 +22,8 @@ pub struct Config {
     /// extending it.
     #[serde(default)]
     replace: bool,
+    /// Preferred map panel style; the --view flag overrides it.
+    view: Option<ViewMode>,
     #[serde(default)]
     resolvers: Vec<Entry>,
 }
@@ -39,20 +42,35 @@ struct Entry {
     lon: Option<f64>,
 }
 
-/// Load the resolver list for this run: built-ins plus (or replaced by) the
-/// config file, if one exists.
-pub fn load() -> Result<Vec<Resolver>> {
+/// Everything the config file contributes to a run.
+pub struct Settings {
+    pub resolvers: Vec<Resolver>,
+    pub view: Option<ViewMode>,
+}
+
+impl Settings {
+    fn defaults() -> Self {
+        Self {
+            resolvers: resolvers::defaults(),
+            view: None,
+        }
+    }
+}
+
+/// Load run settings: the resolver list (built-ins plus, or replaced by, the
+/// config file) and the preferred view, if a config file exists.
+pub fn load() -> Result<Settings> {
     let (path, required) = match std::env::var_os("DNSGLOBE_CONFIG") {
         Some(path) => (Some(PathBuf::from(path)), true),
         None => (default_path(), false),
     };
     let Some(path) = path else {
-        return Ok(resolvers::defaults());
+        return Ok(Settings::defaults());
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => {
-            return Ok(resolvers::defaults());
+            return Ok(Settings::defaults());
         }
         Err(err) => {
             return Err(err).with_context(|| format!("reading config file {}", path.display()));
@@ -60,7 +78,10 @@ pub fn load() -> Result<Vec<Resolver>> {
     };
     let config: Config =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    resolver_list(config).with_context(|| format!("invalid config {}", path.display()))
+    let view = config.view;
+    let resolvers =
+        resolver_list(config).with_context(|| format!("invalid config {}", path.display()))?;
+    Ok(Settings { resolvers, view })
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -221,6 +242,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("-90..=90"));
+    }
+
+    #[test]
+    fn view_parses_all_modes_and_rejects_typos() {
+        for (text, want) in [
+            ("view = \"auto\"", ViewMode::Auto),
+            ("view = \"map\"", ViewMode::Map),
+            ("view = \"globe\"", ViewMode::Globe),
+        ] {
+            let config: Config = toml::from_str(text).unwrap();
+            assert_eq!(config.view, Some(want));
+        }
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.view, None);
+        assert!(toml::from_str::<Config>("view = \"sphere\"").is_err());
     }
 
     #[test]

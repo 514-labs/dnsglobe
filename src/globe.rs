@@ -31,6 +31,69 @@ const SECS_PER_REV: f64 = 36.0;
 /// Flat↔globe morph duration.
 const TRANSITION: Duration = Duration::from_millis(700);
 
+/// Flat map canvas bounds: lon −170..180, lat −55..72 (poles cropped).
+pub const MAP_LON_SPAN: f64 = 350.0;
+pub const MAP_LAT_SPAN: f64 = 127.0;
+/// Rows per column that keep the flat projection square: braille dots are
+/// ~square in a 1:2 terminal font, and a cell is 2 dots wide × 4 tall, so
+/// rows = cols × (lat/lon span) × 2/4. Sizing the map by this instead of
+/// filling available height is what keeps the continents recognizable.
+pub const MAP_ASPECT: f64 = MAP_LAT_SPAN / MAP_LON_SPAN * 2.0 / 4.0;
+pub const MAP_MAX_WIDTH: u16 = 170;
+/// Panel rows kept below the globe for the legend/majority-answer box.
+const INFO_RESERVE: u16 = 4;
+
+/// Map panel dimensions and canvas zoom, all interpolated by the morph so
+/// the panel itself reshapes with the transition.
+pub struct PanelGeom {
+    pub width: u16,
+    pub height: u16,
+    /// Canvas longitude span. The flat map shows the full 350°; the globe
+    /// zooms in until its disc fills the panel. Derived from the panel's
+    /// dot grid so a degree stays square (and the limb circular).
+    pub x_span: f64,
+    pub t: f64,
+}
+
+impl PanelGeom {
+    pub fn x_bounds(&self) -> [f64; 2] {
+        [CENTER_X - self.x_span / 2.0, CENTER_X + self.x_span / 2.0]
+    }
+
+    pub fn y_bounds(&self) -> [f64; 2] {
+        [CENTER_Y - MAP_LAT_SPAN / 2.0, CENTER_Y + MAP_LAT_SPAN / 2.0]
+    }
+}
+
+/// Size the map panel at morph parameter `t`, given the columns available to
+/// it and the body height. The flat endpoint is the classic wide panel; the
+/// globe endpoint is a square dot grid (2 braille dots per cell horizontally,
+/// 4 vertically → cell height ≈ half the width) just big enough for the disc,
+/// so the globe earns its keep on narrow terminals instead of floating small
+/// inside a map-shaped canvas. Between the endpoints everything lerps:
+/// width, height, and zoom animate together with the coastline morph.
+pub fn panel_geometry(avail_width: u16, body_height: u16, t: f64) -> PanelGeom {
+    // Floors keep the geometry sane (and division-safe) on degenerate
+    // terminal sizes; ceilings are lifted to the floor so clamp can't panic.
+    let flat_w = avail_width.clamp(6, MAP_MAX_WIDTH);
+    let flat_h =
+        ((f64::from(flat_w - 2) * MAP_ASPECT).round() as u16 + 2).clamp(4, body_height.max(4));
+    // Square dot grid for the globe, height-capped so the info box below
+    // keeps its rows on wide-but-short terminals.
+    let globe_h = ((flat_w - 2) / 2 + 2).clamp(4, body_height.saturating_sub(INFO_RESERVE).max(4));
+    let globe_w = (2 * (globe_h - 2) + 2).clamp(6, flat_w);
+    // Degrees per dot equal in x and y ⇒ round limb, whatever the clamps did.
+    let globe_span = MAP_LAT_SPAN * f64::from(globe_w - 2) / (2.0 * f64::from(globe_h - 2));
+
+    let lerp = |a: f64, b: f64| a + (b - a) * t;
+    PanelGeom {
+        width: lerp(f64::from(flat_w), f64::from(globe_w)).round() as u16,
+        height: lerp(f64::from(flat_h), f64::from(globe_h)).round() as u16,
+        x_span: lerp(MAP_LON_SPAN, globe_span),
+        t,
+    }
+}
+
 /// Project a (lon, lat) point at morph parameter `t` (0 = flat map,
 /// 1 = globe centered on `center_lon`). Returns the canvas position, or None
 /// when the point has rotated onto the far hemisphere. The visibility cutoff
@@ -86,6 +149,28 @@ impl GlobeView {
         self.origin = self.progress(now);
         self.on = !self.on;
         self.toggled_at = Some(now);
+    }
+
+    /// Current morph target (what the view is heading toward, not where the
+    /// animation is right now).
+    pub fn target(&self) -> bool {
+        self.on
+    }
+
+    /// Steer toward `on`, animating from wherever the morph currently is.
+    /// Idempotent — callers re-assert the target every frame.
+    pub fn set_target(&mut self, on: bool, now: Instant) {
+        if on != self.on {
+            self.toggle(now);
+        }
+    }
+
+    /// Jump straight to `on` with no animation — for the first frame, where
+    /// a terminal that opens narrow should simply start on the globe rather
+    /// than replay the morph on every launch.
+    pub fn snap(&mut self, on: bool) {
+        self.on = on;
+        self.toggled_at = None;
     }
 
     /// Raw morph progress, 0 (flat) to 1 (globe), moving linearly toward the
@@ -201,6 +286,72 @@ mod tests {
         let t0 = view.t(mid);
         assert!((t0 - 0.5).abs() < EPS);
         assert!(view.t(mid + TRANSITION / 2).abs() < EPS);
+    }
+
+    #[test]
+    fn set_target_is_idempotent_mid_morph() {
+        // sync re-asserts the target every frame; that must not restart the
+        // animation from scratch each time.
+        let now = Instant::now();
+        let mut view = GlobeView::new(now);
+        view.set_target(true, now);
+        let mid = now + TRANSITION / 2;
+        view.set_target(true, mid); // same target re-asserted mid-morph
+        assert!((view.t(mid) - 0.5).abs() < EPS);
+        assert!((view.t(now + TRANSITION) - 1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn snap_jumps_without_animating() {
+        let now = Instant::now();
+        let mut view = GlobeView::new(now);
+        view.snap(true);
+        assert!((view.t(now) - 1.0).abs() < EPS);
+        // A later target change still animates normally.
+        view.set_target(false, now);
+        assert!((view.t(now + TRANSITION / 2) - 0.5).abs() < EPS);
+    }
+
+    #[test]
+    fn flat_geometry_matches_the_classic_panel() {
+        let g = panel_geometry(80, 50, 0.0);
+        assert_eq!(g.width, 80);
+        assert_eq!(g.height, (78.0 * MAP_ASPECT).round() as u16 + 2);
+        assert!((g.x_span - MAP_LON_SPAN).abs() < EPS);
+        assert_eq!(g.x_bounds(), [-170.0, 180.0]);
+        assert_eq!(g.y_bounds(), [-55.0, 72.0]);
+    }
+
+    #[test]
+    fn globe_geometry_is_a_square_dot_grid_that_fits_the_disc() {
+        let g = panel_geometry(80, 50, 1.0);
+        // 2 dots/cell wide × 4 tall: square grid means height ≈ width/2.
+        assert_eq!(g.height, (g.width - 2) / 2 + 2);
+        // Zoomed so the 127° lat span fills the panel: the disc (2×RADIUS
+        // = 120°) occupies ~94% of it.
+        assert!((g.x_span - MAP_LAT_SPAN).abs() < EPS);
+    }
+
+    #[test]
+    fn short_terminals_shrink_the_globe_panel_and_keep_it_round() {
+        // Height-capped: the panel narrows to stay square instead of leaving
+        // the globe floating in a wide canvas.
+        let g = panel_geometry(160, 30, 1.0);
+        assert!(g.height <= 30 - 4);
+        assert_eq!(g.width, 2 * (g.height - 2) + 2);
+        // Round limb invariant: degrees per dot equal in x and y.
+        let per_dot_x = g.x_span / (2.0 * f64::from(g.width - 2));
+        let per_dot_y = MAP_LAT_SPAN / (4.0 * f64::from(g.height - 2));
+        assert!((per_dot_x - per_dot_y).abs() < EPS);
+    }
+
+    #[test]
+    fn geometry_survives_degenerate_sizes() {
+        for (w, h) in [(0, 0), (1, 1), (6, 4), (7, 50), (300, 2)] {
+            let g = panel_geometry(w, h, 1.0);
+            assert!(g.width >= 6 && g.height >= 4);
+            assert!(g.x_span.is_finite() && g.x_span > 0.0);
+        }
     }
 
     #[test]

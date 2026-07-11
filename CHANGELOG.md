@@ -8,12 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- 3D rotating globe view: Ctrl+O morphs the flat resolver map into a
-  spinning orthographic globe (and back), with the resolver status dots
-  riding their continents and hiding on the far hemisphere as the planet
-  turns. The globe keeps the map's braille rendering, adds a faint
-  graticule so the rotation reads even over open ocean, and is tilted
-  15° so the northern-hemisphere resolver clusters stay clear of the limb.
+- 3D rotating globe view: the flat resolver map can morph into a spinning
+  orthographic globe, with the resolver status dots riding their continents
+  and hiding on the far hemisphere as the planet turns. The globe keeps the
+  map's braille rendering, adds a faint graticule so the rotation reads even
+  over open ocean, and is tilted 15° so the northern-hemisphere resolver
+  clusters stay clear of the limb.
+- The view is responsive by default: the square-ish globe needs fewer
+  columns than the 350°-wide flat map, so narrow terminals get the globe
+  (down to widths that previously showed no map at all) and wide ones the
+  flat map — resizing across the threshold animates the morph live. Ctrl+O
+  toggles by hand and pins the choice; `--view auto|map|globe` or `view =
+  "..."` in the config file force it outright (flag beats config).
 
 - Nix flake support: `nix run github:514-labs/dnsglobe` builds and runs
   dnsglobe from source on any system with Nix flakes enabled; specific

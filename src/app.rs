@@ -36,6 +36,24 @@ pub const RECORD_TYPES: &[RecordType] = &[
 
 pub const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Body width at which auto view switches from globe to flat map. The globe
+/// panel is square-ish so it stays useful on narrow terminals; the flat map
+/// only earns its 350°-wide canvas once there's real room next to the table.
+pub const AUTO_FLAT_WIDTH: u16 = 190;
+
+/// Which map panel to show, from `--view`, the config file, or Ctrl+O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    /// Globe on narrow terminals, flat map when the window is wide.
+    #[default]
+    Auto,
+    /// Always the flat map.
+    Map,
+    /// Always the globe.
+    Globe,
+}
+
 /// Table ordering, cycled with Ctrl+S. Sorts are stable, so ties keep the
 /// curated resolver-list order — `Location` therefore doubles as "group by
 /// location", and `Answer` groups identical answers together.
@@ -166,8 +184,13 @@ pub struct App {
     pub next_poll: Option<Instant>,
     /// Active table ordering, cycled with Ctrl+S.
     pub sort: SortMode,
-    /// Flat map ↔ rotating globe, toggled with Ctrl+O.
+    /// Flat map ↔ rotating globe morph state.
     pub globe: GlobeView,
+    /// View policy: auto by width, or pinned by --view/config/Ctrl+O.
+    pub view_mode: ViewMode,
+    /// False until the first `sync_view`: the first frame snaps to its view
+    /// instead of replaying the morph on every launch in a narrow terminal.
+    view_synced: bool,
     /// Per-resolver anycast site discovered by that operator's identification
     /// query (issue #6): which POP is actually answering us. None = no probe
     /// or probe failed. Session-static — the site depends on our network
@@ -195,6 +218,8 @@ impl App {
             next_poll: None,
             sort: SortMode::default(),
             globe: GlobeView::new(Instant::now()),
+            view_mode: ViewMode::default(),
+            view_synced: false,
             sites: vec![None; resolvers::active().len()],
             history: vec![VecDeque::new(); resolvers::active().len()],
         }
@@ -277,8 +302,38 @@ impl App {
         self.cursor = 0;
     }
 
+    /// The view this width calls for under the active policy.
+    pub fn desired_globe(&self, body_width: u16) -> bool {
+        match self.view_mode {
+            ViewMode::Globe => true,
+            ViewMode::Map => false,
+            ViewMode::Auto => body_width < AUTO_FLAT_WIDTH,
+        }
+    }
+
+    /// Re-assert the view target for the current width; called every frame
+    /// so resizing across the auto threshold morphs the panel. The first
+    /// call snaps (no launch animation), later changes animate.
+    pub fn sync_view(&mut self, body_width: u16) {
+        let want = self.desired_globe(body_width);
+        if self.view_synced {
+            self.globe.set_target(want, Instant::now());
+        } else {
+            self.globe.snap(want);
+            self.view_synced = true;
+        }
+    }
+
+    /// Ctrl+O: flip the view and pin it — a manual choice shouldn't be
+    /// overridden by the next resize.
     pub fn toggle_globe(&mut self) {
-        self.globe.toggle(Instant::now());
+        self.view_mode = if self.globe.target() {
+            ViewMode::Map
+        } else {
+            ViewMode::Globe
+        };
+        self.globe
+            .set_target(self.view_mode == ViewMode::Globe, Instant::now());
     }
 
     pub fn cycle_record_type(&mut self, forward: bool) {
@@ -760,6 +815,51 @@ mod tests {
         assert_eq!(app.cursor, 1); // end of "a"
         app.move_cursor_word_right();
         assert_eq!(app.cursor, 4); // past both dots to end of "b"
+    }
+
+    #[test]
+    fn auto_view_picks_globe_below_the_width_threshold() {
+        let app = App::new("example.com".into());
+        assert!(app.desired_globe(AUTO_FLAT_WIDTH - 1));
+        assert!(!app.desired_globe(AUTO_FLAT_WIDTH));
+    }
+
+    #[test]
+    fn forced_views_ignore_the_width() {
+        let mut app = App::new("example.com".into());
+        app.view_mode = ViewMode::Globe;
+        assert!(app.desired_globe(500));
+        app.view_mode = ViewMode::Map;
+        assert!(!app.desired_globe(100));
+    }
+
+    #[test]
+    fn first_sync_snaps_then_resizes_animate() {
+        let mut app = App::new("example.com".into());
+        // Launching in a narrow terminal starts on the globe instantly.
+        app.sync_view(120);
+        assert!((app.globe.t(Instant::now()) - 1.0).abs() < 1e-9);
+        // Widening past the threshold animates back toward the flat map:
+        // target flips but the morph has barely moved yet.
+        app.sync_view(300);
+        assert!(!app.globe.target());
+        assert!(app.globe.t(Instant::now()) > 0.9);
+    }
+
+    #[test]
+    fn manual_toggle_pins_the_view_against_resizes() {
+        let mut app = App::new("example.com".into());
+        app.sync_view(300); // auto, wide → flat map
+        assert!(!app.globe.target());
+        app.toggle_globe();
+        assert_eq!(app.view_mode, ViewMode::Globe);
+        // Still globe after re-syncing at a width auto would call flat.
+        app.sync_view(300);
+        assert!(app.globe.target());
+        app.toggle_globe();
+        assert_eq!(app.view_mode, ViewMode::Map);
+        app.sync_view(120);
+        assert!(!app.globe.target());
     }
 
     #[test]
