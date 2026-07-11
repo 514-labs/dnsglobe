@@ -87,7 +87,9 @@ their own location, not the probed network.
 | Enter          | start the check and watch: re-polls every 30 s until propagation reaches 100% |
 | Ctrl+R         | stop or resume watching         |
 | Tab / Shift-Tab | select record type (A, AAAA, CNAME, MX, NS, TXT, SOA) and re-query |
-| ↑/↓ / PgUp/PgDn | scroll the resolver table |
+| ↑/↓ / PgUp/PgDn | move the highlight through the resolver table (scrolls to follow) |
+| +              | add a resolver for this session (name, IP, optional location and map position) |
+| Ctrl+X         | remove the highlighted resolver for this session |
 | Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
 | Ctrl+N         | cycle the ECS client subnet and re-query (only when `--ecs`/config set one up) |
 | Ctrl+U         | clear domain                    |

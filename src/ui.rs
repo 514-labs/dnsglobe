@@ -5,14 +5,14 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Painter, Shape};
-use ratatui::widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, LineGauge, Paragraph, Row, Table, TableState};
 
 use crate::app::{
-    ADVISORY_TTL, App, RECORD_TYPES, RowState, SPINNER, Summary, TtlVerdict, fmt_secs,
+    ADVISORY_TTL, App, RECORD_TYPES, ResolverForm, RowState, SPINNER, Summary, TtlVerdict, fmt_secs,
 };
 use crate::dns::QueryResult;
 use crate::theme;
-use crate::{globe, resolvers, world_data};
+use crate::{globe, world_data};
 
 /// Table needs ~103 cols; only show the flat map when there's room for both.
 const MIN_WIDTH_FOR_MAP: u16 = 157;
@@ -66,9 +66,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_gauge(frame, app, &summary, gauge);
     // Clamp scroll so the last page stays full; height minus borders+header.
     let visible = table.height.saturating_sub(3) as usize;
-    app.scroll = app
-        .scroll
-        .min(resolvers::active().len().saturating_sub(visible));
+    app.scroll = app.scroll.min(app.resolvers.len().saturating_sub(visible));
     draw_table(frame, app, &summary, complete, table);
     if let Some(right) = right {
         // Leftover space below the map shows the majority answer in full.
@@ -78,6 +76,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_map_info(frame, app, &summary, complete, info_area);
     }
     draw_footer(frame, app, &summary, advisory, footer);
+    if let Some(form) = &app.form {
+        draw_resolver_form(frame, form, frame.area());
+    }
 }
 
 /// Rows to reserve below the globe for the info box, mirroring what
@@ -168,7 +169,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
     let th = theme::active();
-    let total = resolvers::active().len();
+    let total = app.resolvers.len();
 
     if app.queried.is_none() {
         let hint = Paragraph::new(Line::from(Span::styled(
@@ -246,7 +247,7 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
     frame.render_widget(gauge, area);
 }
 
-fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, area: Rect) {
+fn draw_table(frame: &mut Frame, app: &mut App, summary: &Summary, complete: bool, area: Rect) {
     let th = theme::active();
     let header = Row::new([
         "Resolver", "Loc", "IP", "Time", "TTL", "Exp", "Status", "Answer",
@@ -254,10 +255,15 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
     .style(Style::new().fg(th.accent).bold());
     let now = Instant::now();
 
-    let rows = app
-        .display_order(summary)
-        .into_iter()
-        .map(|i| (i, (&resolvers::active()[i], &app.rows[i])))
+    let order = app.display_order(summary);
+    // The highlight tracks a resolver, not a row: find where the display
+    // order put it this frame.
+    let selected = app
+        .selected
+        .and_then(|sel| order.iter().position(|&i| i == sel));
+    let rows = order
+        .iter()
+        .map(|&i| (i, (&app.resolvers[i], &app.rows[i])))
         .map(|(i, (resolver, state))| {
             let (time_cell, ttl_cell, exp_cell, status_cell, answer_cell) = match state {
                 RowState::Idle => (
@@ -430,23 +436,31 @@ fn draw_table(frame: &mut Frame, app: &App, summary: &Summary, complete: bool, a
     )
     .header(header)
     .column_spacing(1)
+    // Reversed, not a color: readable on any theme, and it can't be confused
+    // with the status colors the row already carries.
+    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
     .block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(th.muted.style())
             .title_bottom(
                 Line::from(format!(
-                    " sort: {} (Ctrl+S) · {} resolvers (↑/↓ scroll) ",
+                    " sort: {} (Ctrl+S) · {} resolvers (↑/↓ select) ",
                     app.sort.label(),
-                    resolvers::active().len()
+                    app.resolvers.len()
                 ))
                 .right_aligned()
                 .style(th.muted.style()),
             ),
     );
 
-    let mut state = TableState::default().with_offset(app.scroll);
+    let mut state = TableState::default()
+        .with_offset(app.scroll)
+        .with_selected(selected);
     frame.render_stateful_widget(table, area, &mut state);
+    // Ratatui scrolls the offset to keep the selection visible; persist that
+    // so the view doesn't snap back next frame.
+    app.scroll = state.offset();
 }
 
 /// The world mid-morph: coastline points run through the flat↔globe
@@ -609,7 +623,7 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
             format!(
                 "Majority answer ({}/{} resolvers):",
                 summary.agree,
-                resolvers::active().len()
+                app.resolvers.len()
             ),
             Style::new().fg(th.accent).bold(),
         )));
@@ -700,7 +714,7 @@ fn draw_footer(
     };
     let keys = Line::from(Span::styled(
         format!(
-            " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Ctrl+O globe/map · Tab record type{ecs_hint} · ↑/↓ scroll · Esc quit"
+            " type to edit · ←/→ move cursor (⌥/Ctrl word, ⌘/Home/End ends) · Enter query+watch · Ctrl+R watch on/off · Ctrl+S sort · Ctrl+O globe/map · Tab record type{ecs_hint} · ↑/↓ select · + add resolver · Ctrl+X remove · Esc quit"
         ),
         th.muted.style(),
     ));
@@ -724,6 +738,66 @@ fn draw_footer(
         frame.render_widget(Paragraph::new(status), status_area);
         frame.render_widget(Paragraph::new(keys), keys_area);
     }
+}
+
+/// The `+` add-resolver dialog, centered over whatever is behind it. One
+/// line per field; the focused field carries the accent and a cursor.
+fn draw_resolver_form(frame: &mut Frame, form: &ResolverForm, area: Rect) {
+    let th = theme::active();
+    // Fields + error line + hint, borders, and a blank line above each of
+    // the two trailing sections.
+    let height = (ResolverForm::LABELS.len() as u16 + 6).min(area.height);
+    let width = 46.min(area.width);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    let mut lines = Vec::new();
+    for (i, label) in ResolverForm::LABELS.iter().enumerate() {
+        let value = &form.fields[i];
+        let mut spans = vec![Span::styled(
+            format!(" {label:<9} "),
+            if i == form.focus {
+                Style::new().fg(th.accent).bold()
+            } else {
+                th.muted.style()
+            },
+        )];
+        if i == form.focus {
+            let (before, after) = value.split_at(form.cursor.min(value.len()));
+            spans.push(Span::styled(before, Style::new().bold()));
+            spans.push(Span::styled("▏", Style::new().fg(th.accent)));
+            spans.push(Span::styled(after, Style::new().bold()));
+        } else {
+            spans.push(Span::raw(value.as_str()));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::default());
+    lines.push(match &form.error {
+        Some(error) => Line::from(Span::styled(format!(" {error}"), Style::new().fg(th.error))),
+        // Which fields may stay empty, where an error would otherwise sit.
+        None => Line::from(Span::styled(
+            " location and lat/lon are optional",
+            th.muted.style().italic(),
+        )),
+    });
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " Enter add · Tab/↑/↓ field · Esc cancel",
+        th.muted.style(),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(th.accent))
+        .title(" Add resolver ")
+        .title_style(Style::new().bold());
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 #[cfg(test)]

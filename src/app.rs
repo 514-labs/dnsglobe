@@ -1,11 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use hickory_resolver::proto::rr::RecordType;
 
 use crate::dns::{ClientSubnet, QueryOutcome, QueryResult};
 use crate::globe::GlobeView;
-use crate::resolvers;
+use crate::resolvers::{self, Resolver};
 use crate::sites::Site;
 
 /// Watch-mode re-poll interval; propagation usually moves on TTL boundaries,
@@ -183,6 +184,129 @@ pub struct Round {
     pub indices: Vec<usize>,
 }
 
+/// The add-resolver dialog (`+`): one text field per resolver attribute,
+/// validated as a whole on Enter so a half-typed IP doesn't block editing.
+#[derive(Debug, Default)]
+pub struct ResolverForm {
+    /// Field values in `LABELS` order: name, IP, location, lat, lon.
+    pub fields: [String; 5],
+    /// Which field has focus.
+    pub focus: usize,
+    /// Cursor within the focused field. Input is ASCII-only (like the domain
+    /// field), so byte index == char index.
+    pub cursor: usize,
+    /// Last failed validation, cleared on the next edit.
+    pub error: Option<String>,
+}
+
+impl ResolverForm {
+    pub const LABELS: [&'static str; 5] = ["Name", "IP", "Location", "Lat", "Lon"];
+
+    fn field(&mut self) -> &mut String {
+        &mut self.fields[self.focus]
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        // ASCII-only keeps cursor arithmetic byte==char, like the domain
+        // input; controls would corrupt the rendered line.
+        if !c.is_ascii() || c.is_ascii_control() {
+            return;
+        }
+        let at = self.cursor;
+        self.field().insert(at, c);
+        self.cursor += 1;
+        self.error = None;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            let at = self.cursor;
+            self.field().remove(at);
+            self.error = None;
+        }
+    }
+
+    pub fn delete(&mut self) {
+        let at = self.cursor;
+        if at < self.field().len() {
+            self.field().remove(at);
+            self.error = None;
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.fields[self.focus].len());
+    }
+
+    pub fn cursor_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn cursor_end(&mut self) {
+        self.cursor = self.fields[self.focus].len();
+    }
+
+    /// Tab/↓ (or BackTab/↑) between fields; the cursor lands at the end of
+    /// the newly focused value.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        let n = self.fields.len();
+        self.focus = if forward {
+            (self.focus + 1) % n
+        } else {
+            (self.focus + n - 1) % n
+        };
+        self.cursor = self.fields[self.focus].len();
+    }
+
+    /// Validate the form into a resolver. Mirrors the config file's rules
+    /// (`config::resolver_list`): IP must parse, lat/lon together or not at
+    /// all, coordinates on the globe.
+    fn validated(&self) -> Result<Resolver, String> {
+        let name = self.fields[0].trim();
+        if name.is_empty() {
+            return Err("name is required".into());
+        }
+        let ip_text = self.fields[1].trim();
+        let ip: IpAddr = ip_text
+            .parse()
+            .map_err(|_| format!("invalid IP address {ip_text:?}"))?;
+        let parse_coord = |label: &str, text: &str| -> Result<Option<f64>, String> {
+            let text = text.trim();
+            if text.is_empty() {
+                return Ok(None);
+            }
+            text.parse::<f64>()
+                .map(Some)
+                .map_err(|_| format!("{label} must be a number"))
+        };
+        let coords = match (
+            parse_coord("lat", &self.fields[3])?,
+            parse_coord("lon", &self.fields[4])?,
+        ) {
+            (Some(lat), Some(lon)) => {
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    return Err("lat must be in -90..=90 and lon in -180..=180".into());
+                }
+                Some((lat, lon))
+            }
+            (None, None) => None,
+            _ => return Err("lat and lon must be given together".into()),
+        };
+        Ok(Resolver {
+            name: name.to_string(),
+            location: self.fields[2].trim().to_string(),
+            ip,
+            coords,
+            probe: None,
+        })
+    }
+}
+
 pub struct App {
     pub domain: String,
     /// Cursor position in `domain`. The input only accepts ASCII
@@ -224,15 +348,26 @@ pub struct App {
     /// on a fresh query, preserved across re-polls — cache-behavior verdicts
     /// only exist while watching one domain/type.
     history: Vec<VecDeque<Observation>>,
+    /// The resolver list for this session: the startup list plus/minus
+    /// runtime additions and removals. `rows`, `sites` and `history` are
+    /// parallel to it.
+    pub resolvers: Vec<Resolver>,
+    /// Table row highlight, as a *resolver* index (stable across re-sorts);
+    /// ↑/↓ move it through the display order, Ctrl+X removes it.
+    pub selected: Option<usize>,
+    /// Add-resolver dialog; while open it captures all key input.
+    pub form: Option<ResolverForm>,
 }
 
 impl App {
     pub fn new(domain: String) -> Self {
+        let resolvers = resolvers::active().to_vec();
+        let n = resolvers.len();
         Self {
             cursor: domain.len(),
             domain,
             rtype_idx: 0,
-            rows: vec![RowState::Idle; resolvers::active().len()],
+            rows: vec![RowState::Idle; n],
             generation: 0,
             spinner_frame: 0,
             should_quit: false,
@@ -246,8 +381,11 @@ impl App {
             globe: GlobeView::new(Instant::now()),
             view_mode: ViewMode::default(),
             view_synced: false,
-            sites: vec![None; resolvers::active().len()],
-            history: vec![VecDeque::new(); resolvers::active().len()],
+            sites: vec![None; n],
+            history: vec![VecDeque::new(); n],
+            resolvers,
+            selected: None,
+            form: None,
         }
     }
 
@@ -256,7 +394,7 @@ impl App {
     pub fn effective_location(&self, index: usize) -> &str {
         match &self.sites[index] {
             Some(site) => &site.code,
-            None => &resolvers::active()[index].location,
+            None => &self.resolvers[index].location,
         }
     }
 
@@ -266,11 +404,139 @@ impl App {
         self.sites[index]
             .as_ref()
             .and_then(|site| site.coords)
-            .or(resolvers::active()[index].coords)
+            .or(self.resolvers[index].coords)
+    }
+
+    /// Record a discovered anycast site. Keyed by IP, not index: the probe
+    /// result arrives on a channel and the list may have been edited (rows
+    /// shifted) while it was in flight.
+    pub fn set_site(&mut self, ip: IpAddr, site: Site) {
+        if let Some(index) = self.resolvers.iter().position(|r| r.ip == ip) {
+            self.sites[index] = Some(site);
+        }
     }
 
     pub fn record_type(&self) -> RecordType {
         RECORD_TYPES[self.rtype_idx]
+    }
+
+    /// ↑/↓ (±1) and PageUp/PageDown (±10): step the highlight through the
+    /// *display* order, so it moves visually even under Time/Status sorts.
+    /// The first press enters the table at the nearest end.
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let order = self.display_order(&self.summary());
+        let last = order.len() as isize - 1;
+        let position = self
+            .selected
+            .and_then(|sel| order.iter().position(|&i| i == sel));
+        let target = match position {
+            Some(p) => (p as isize).saturating_add(delta).clamp(0, last),
+            None if delta < 0 => last,
+            None => 0,
+        };
+        self.selected = Some(order[target as usize]);
+    }
+
+    /// `+`: open the add-resolver dialog.
+    pub fn open_form(&mut self) {
+        self.form = Some(ResolverForm::default());
+    }
+
+    pub fn cancel_form(&mut self) {
+        self.form = None;
+    }
+
+    /// Enter in the dialog: validate, then append the resolver. On failure
+    /// the dialog stays open showing the error. Returns a round for the new
+    /// row when a domain is being watched, so it fills in right away.
+    pub fn submit_form(&mut self) -> Option<Round> {
+        let form = self.form.as_mut()?;
+        let resolver = match form.validated() {
+            Ok(resolver) => resolver,
+            Err(message) => {
+                form.error = Some(message);
+                return None;
+            }
+        };
+        if let Some(existing) = self.resolvers.iter().find(|r| r.ip == resolver.ip) {
+            form.error = Some(format!(
+                "{} is already listed ({})",
+                resolver.ip, existing.name
+            ));
+            return None;
+        }
+        self.form = None;
+        let round = self.add_resolver(resolver);
+        // Highlight the addition — under a non-default sort the new row can
+        // land anywhere, and the highlight keeps it visible (draw follows it).
+        self.selected = Some(self.resolvers.len() - 1);
+        round
+    }
+
+    /// Append a resolver to the session list. When a query is on screen the
+    /// new row starts Pending and the returned round queries just it — on
+    /// the *current* generation: bumping it would orphan the in-flight rows
+    /// of the active round.
+    pub fn add_resolver(&mut self, resolver: Resolver) -> Option<Round> {
+        self.resolvers.push(resolver);
+        self.sites.push(None);
+        self.history.push(VecDeque::new());
+        let Some((domain, rtype, ecs)) = self.queried.clone() else {
+            self.rows.push(RowState::Idle);
+            return None;
+        };
+        self.rows.push(RowState::Pending);
+        Some(Round {
+            domain,
+            rtype,
+            ecs,
+            generation: self.generation,
+            indices: vec![self.rows.len() - 1],
+        })
+    }
+
+    /// Ctrl+X: drop the highlighted resolver. Indices shift, so results
+    /// still in flight would land on the wrong rows (or past the end) — the
+    /// generation bump discards them, and the returned round restarts the
+    /// rows that were left waiting. The last resolver can't be removed: an
+    /// empty table has nothing left to check.
+    pub fn remove_selected(&mut self) -> Option<Round> {
+        let index = self.selected?;
+        if self.resolvers.len() <= 1 {
+            return None;
+        }
+        // Keep the highlight at the same display position, on whichever row
+        // moves up into it.
+        let position = self
+            .display_order(&self.summary())
+            .iter()
+            .position(|&i| i == index)
+            .unwrap_or(0);
+        self.resolvers.remove(index);
+        self.rows.remove(index);
+        self.sites.remove(index);
+        self.history.remove(index);
+        self.generation += 1;
+        let order = self.display_order(&self.summary());
+        self.selected = order.get(position.min(order.len() - 1)).copied();
+
+        let pending: Vec<usize> = (0..self.rows.len())
+            .filter(|&i| matches!(self.rows[i], RowState::Pending))
+            .collect();
+        let (domain, rtype, ecs) = self.queried.clone()?;
+        if pending.is_empty() {
+            return None;
+        }
+        Some(Round {
+            domain,
+            rtype,
+            ecs,
+            generation: self.generation,
+            indices: pending,
+        })
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -423,8 +689,8 @@ impl App {
     /// subnet aren't comparable across polls.
     fn arm_round(&mut self, domain: String, rtype: RecordType) -> Round {
         self.generation += 1;
-        self.rows = vec![RowState::Pending; resolvers::active().len()];
-        self.history = vec![VecDeque::new(); resolvers::active().len()];
+        self.rows = vec![RowState::Pending; self.resolvers.len()];
+        self.history = vec![VecDeque::new(); self.resolvers.len()];
         let ecs = self.active_ecs();
         self.queried = Some((domain.clone(), rtype, ecs));
         Round {
@@ -1280,6 +1546,222 @@ mod tests {
         assert_eq!(s.responding, 2);
         assert_eq!(s.agree, s.responding); // watch mode can complete
         assert_eq!(s.majority_rows, vec![true, true, false, false]);
+    }
+
+    fn resolver(name: &str, ip: &str) -> Resolver {
+        Resolver {
+            name: name.into(),
+            location: String::new(),
+            ip: ip.parse().unwrap(),
+            coords: None,
+            probe: None,
+        }
+    }
+
+    fn form_with(fields: [&str; 5]) -> ResolverForm {
+        ResolverForm {
+            fields: fields.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn add_before_any_query_appends_an_idle_row() {
+        let mut app = App::new("example.com".into());
+        let n = app.resolvers.len();
+        let round = app.add_resolver(resolver("Corp", "192.0.2.1"));
+        assert!(round.is_none());
+        assert_eq!(app.resolvers.len(), n + 1);
+        assert_eq!(app.rows.len(), n + 1);
+        assert_eq!(app.sites.len(), n + 1);
+        assert!(matches!(app.rows[n], RowState::Idle));
+    }
+
+    #[test]
+    fn add_during_a_query_rounds_up_only_the_new_row() {
+        let mut app = App::new("example.com".into());
+        let first = app.begin_query().unwrap();
+        let round = app.add_resolver(resolver("Corp", "192.0.2.1")).unwrap();
+        let new_index = app.resolvers.len() - 1;
+        assert_eq!(round.indices, vec![new_index]);
+        assert_eq!(round.domain, "example.com");
+        // Same generation: results of the round already in flight must keep
+        // landing, and the new row's result must land too.
+        assert_eq!(round.generation, first.generation);
+        assert!(matches!(app.rows[new_index], RowState::Pending));
+        app.apply(QueryOutcome {
+            resolver_index: new_index,
+            generation: round.generation,
+            result: QueryResult::Records {
+                values: vec!["x".into()],
+                min_ttl: 60,
+            },
+            elapsed: Duration::from_millis(10),
+            ecs_honored: None,
+        });
+        assert!(matches!(app.rows[new_index], RowState::Done { .. }));
+    }
+
+    #[test]
+    fn remove_drops_the_row_and_restarts_orphaned_pending_rows() {
+        let mut app = App::new("example.com".into());
+        let n = app.resolvers.len();
+        let first = app.begin_query().unwrap();
+        app.selected = Some(0);
+        let round = app.remove_selected().unwrap();
+        assert_eq!(app.resolvers.len(), n - 1);
+        assert_eq!(app.rows.len(), n - 1);
+        // Indices shifted: in-flight results are now aimed at the wrong rows,
+        // so the round that re-arms the still-pending ones supersedes them.
+        assert!(round.generation > first.generation);
+        assert_eq!(round.indices, (0..n - 1).collect::<Vec<_>>());
+        // A result from the superseded round is dropped, not misapplied.
+        app.apply(QueryOutcome {
+            resolver_index: n - 1, // out of bounds after the removal
+            generation: first.generation,
+            result: QueryResult::ServFail,
+            elapsed: Duration::from_millis(10),
+            ecs_honored: None,
+        });
+    }
+
+    #[test]
+    fn remove_with_settled_rows_needs_no_requery_and_keeps_state_aligned() {
+        let mut app = app_with_answers(&[&["a"], &["b"], &["c"]]);
+        app.resolvers.truncate(3);
+        app.sites.truncate(3);
+        app.history.truncate(3);
+        app.queried = Some(("example.com".into(), RecordType::A, None));
+        app.selected = Some(1);
+        assert!(app.remove_selected().is_none()); // nothing pending
+        // Neighbors kept their own answers: the vectors shifted together.
+        let values = |i: usize| match &app.rows[i] {
+            RowState::Done {
+                result: QueryResult::Records { values, .. },
+                ..
+            } => values.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(values(0), vec!["a"]);
+        assert_eq!(values(1), vec!["c"]);
+        // The highlight stays at the same display position: the row that
+        // moved up into it.
+        assert_eq!(app.selected, Some(1));
+    }
+
+    #[test]
+    fn the_last_resolver_cannot_be_removed() {
+        let mut app = App::new("example.com".into());
+        app.resolvers.truncate(1);
+        app.rows.truncate(1);
+        app.sites.truncate(1);
+        app.history.truncate(1);
+        app.selected = Some(0);
+        assert!(app.remove_selected().is_none());
+        assert_eq!(app.resolvers.len(), 1);
+    }
+
+    #[test]
+    fn selection_steps_through_display_order_and_clamps() {
+        let mut app = App::new("example.com".into());
+        let last = app.resolvers.len() - 1;
+        app.move_selection(-1); // entering from below starts at the bottom
+        assert_eq!(app.selected, Some(last));
+        app.move_selection(10);
+        assert_eq!(app.selected, Some(last)); // clamped
+        app.selected = None;
+        app.move_selection(1);
+        assert_eq!(app.selected, Some(0));
+        app.move_selection(-5);
+        assert_eq!(app.selected, Some(0)); // clamped
+        app.move_selection(2);
+        assert_eq!(app.selected, Some(2));
+    }
+
+    #[test]
+    fn form_validation_reports_each_broken_field() {
+        for (fields, needle) in [
+            (["", "192.0.2.1", "", "", ""], "name is required"),
+            (["X", "not-an-ip", "", "", ""], "invalid IP address"),
+            (["X", "192.0.2.1", "", "12.0", ""], "given together"),
+            (["X", "192.0.2.1", "", "91.0", "0.0"], "-90..=90"),
+            (["X", "192.0.2.1", "", "abc", "0.0"], "lat must be a number"),
+        ] {
+            let err = form_with(fields).validated().unwrap_err();
+            assert!(err.contains(needle), "{err:?} should mention {needle:?}");
+        }
+    }
+
+    #[test]
+    fn valid_form_builds_the_resolver_with_optional_coords() {
+        let full = form_with(["Corp DNS ", " 192.0.2.1", " HQ ", "40.7", "-74.0"])
+            .validated()
+            .unwrap();
+        assert_eq!(full.name, "Corp DNS");
+        assert_eq!(full.ip, "192.0.2.1".parse::<IpAddr>().unwrap());
+        assert_eq!(full.location, "HQ");
+        assert_eq!(full.coords, Some((40.7, -74.0)));
+        let bare = form_with(["v6", "2001:db8::1", "", "", ""])
+            .validated()
+            .unwrap();
+        assert!(bare.ip.is_ipv6());
+        assert_eq!(bare.coords, None);
+    }
+
+    #[test]
+    fn submitting_a_duplicate_ip_keeps_the_form_open_with_an_error() {
+        let mut app = App::new("example.com".into());
+        let n = app.resolvers.len();
+        app.open_form();
+        let ip = app.resolvers[0].ip.to_string();
+        app.form.as_mut().unwrap().fields = ["Dup".into(), ip, "".into(), "".into(), "".into()];
+        assert!(app.submit_form().is_none());
+        assert_eq!(app.resolvers.len(), n);
+        let form = app.form.as_ref().expect("form stays open");
+        assert!(form.error.as_ref().unwrap().contains("already listed"));
+    }
+
+    #[test]
+    fn submitting_a_valid_form_adds_and_highlights_the_resolver() {
+        let mut app = App::new("example.com".into());
+        let n = app.resolvers.len();
+        app.open_form();
+        {
+            let form = app.form.as_mut().unwrap();
+            for c in "Corp".chars() {
+                form.insert_char(c);
+            }
+            form.cycle_focus(true);
+            for c in "192.0.2.1".chars() {
+                form.insert_char(c);
+            }
+        }
+        assert!(app.submit_form().is_none()); // nothing queried yet
+        assert!(app.form.is_none());
+        assert_eq!(app.resolvers.len(), n + 1);
+        assert_eq!(app.resolvers[n].name, "Corp");
+        assert_eq!(app.selected, Some(n));
+    }
+
+    #[test]
+    fn form_editing_is_per_field_with_cursor_following_focus() {
+        let mut form = ResolverForm::default();
+        form.insert_char('a');
+        form.insert_char('b');
+        form.move_cursor_left();
+        form.insert_char('x');
+        assert_eq!(form.fields[0], "axb");
+        form.backspace();
+        assert_eq!(form.fields[0], "ab");
+        form.cycle_focus(true);
+        assert_eq!(form.focus, 1);
+        assert_eq!(form.cursor, 0); // the IP field is empty
+        form.cycle_focus(false);
+        assert_eq!(form.focus, 0);
+        assert_eq!(form.cursor, 2); // back at the end of "ab"
+        form.error = Some("boom".into());
+        form.insert_char('c');
+        assert_eq!(form.error, None); // editing clears the last error
     }
 
     #[test]

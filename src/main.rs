@@ -170,10 +170,11 @@ async fn run_tui(
     let (tx, mut rx) = mpsc::unbounded_channel::<QueryOutcome>();
     // Anycast site discoveries arrive on their own channel: they have no
     // generation — the answering POP depends on our network path, not on
-    // what domain is being checked.
-    let (site_tx, mut site_rx) = mpsc::unbounded_channel::<(usize, sites::Site)>();
+    // what domain is being checked. Keyed by IP, not index: the resolver
+    // list can be edited while a probe is in flight.
+    let (site_tx, mut site_rx) = mpsc::unbounded_channel::<(IpAddr, sites::Site)>();
 
-    spawn_site_probes(&site_tx);
+    spawn_site_probes(&app, &site_tx);
     if auto_query {
         spawn_queries(&mut app, &tx);
     }
@@ -216,8 +217,8 @@ async fn run_tui(
                     }
                 }
             }
-            Some((index, site)) = site_rx.recv() => {
-                app.sites[index] = Some(site);
+            Some((ip, site)) = site_rx.recv() => {
+                app.set_site(ip, site);
             }
             _ = tick.tick() => {
                 if app.in_flight() {
@@ -241,10 +242,24 @@ fn handle_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) {
+    // The add-resolver dialog captures all input while open.
+    if app.form.is_some() {
+        handle_form_key(app, tx, code, modifiers);
+        return;
+    }
     match code {
         KeyCode::Esc => app.should_quit = true,
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
+        }
+        // `+` never appears in a domain name, so it's free for "add a
+        // resolver" despite the input field owning most printable keys.
+        KeyCode::Char('+') => app.open_form(),
+        // Ctrl+X: cut the highlighted resolver from the session's list.
+        KeyCode::Char('x') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(round) = app.remove_selected() {
+                spawn_round(app, tx, round);
+            }
         }
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.clear_domain();
@@ -315,10 +330,12 @@ fn handle_key(
         KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.cursor = app.domain.len();
         }
-        KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
-        KeyCode::Down => app.scroll += 1, // clamped during draw
-        KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(10),
-        KeyCode::PageDown => app.scroll += 10,
+        // Arrows move the table highlight; the view scrolls to follow it
+        // (the draw pass keeps the selection visible).
+        KeyCode::Up => app.move_selection(-1),
+        KeyCode::Down => app.move_selection(1),
+        KeyCode::PageUp => app.move_selection(-10),
+        KeyCode::PageDown => app.move_selection(10),
         KeyCode::Backspace => app.backspace(),
         KeyCode::Delete => app.delete(),
         KeyCode::Char(c)
@@ -332,6 +349,46 @@ fn handle_key(
     }
 }
 
+/// Key handling while the add-resolver dialog is open: Tab/↑/↓ move between
+/// fields, Enter validates and adds, Esc cancels. Field text takes any
+/// printable ASCII (names have spaces, IPv6 has colons).
+fn handle_form_key(
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<QueryOutcome>,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) {
+    let Some(form) = app.form.as_mut() else {
+        return;
+    };
+    match code {
+        KeyCode::Esc => app.cancel_form(),
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        KeyCode::Enter => {
+            if let Some(round) = app.submit_form() {
+                spawn_round(app, tx, round);
+            }
+        }
+        KeyCode::Tab | KeyCode::Down => form.cycle_focus(true),
+        KeyCode::BackTab | KeyCode::Up => form.cycle_focus(false),
+        KeyCode::Left => form.move_cursor_left(),
+        KeyCode::Right => form.move_cursor_right(),
+        KeyCode::Home => form.cursor_home(),
+        KeyCode::End => form.cursor_end(),
+        KeyCode::Backspace => form.backspace(),
+        KeyCode::Delete => form.delete(),
+        KeyCode::Char(c)
+            if !modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
+        {
+            form.insert_char(c);
+        }
+        _ => {}
+    }
+}
+
 /// Start a fresh query from the input field and turn watch mode on.
 fn spawn_queries(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
     let Some(round) = app.begin_query() else {
@@ -339,7 +396,7 @@ fn spawn_queries(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
     };
     app.auto_refresh = true;
     app.next_poll = None;
-    spawn_round(tx, round);
+    spawn_round(app, tx, round);
 }
 
 /// Re-run the checked domain with the current record-type/ECS selection —
@@ -350,7 +407,7 @@ fn requery_selection(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
         return;
     };
     app.next_poll = None;
-    spawn_round(tx, round);
+    spawn_round(app, tx, round);
 }
 
 /// Re-poll the last-queried domain/type (watch mode).
@@ -359,13 +416,13 @@ fn poll_query(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
         return;
     };
     app.next_poll = None;
-    spawn_round(tx, round);
+    spawn_round(app, tx, round);
 }
 
 /// Ask each anycast resolver which of its sites is answering us (issue #6).
 /// One shot per run: the site follows our network path, not the query.
-fn spawn_site_probes(site_tx: &mpsc::UnboundedSender<(usize, sites::Site)>) {
-    for (index, resolver) in resolvers::active().iter().enumerate() {
+fn spawn_site_probes(app: &App, site_tx: &mpsc::UnboundedSender<(IpAddr, sites::Site)>) {
+    for resolver in &app.resolvers {
         let Some(probe) = resolver.probe else {
             continue;
         };
@@ -373,18 +430,18 @@ fn spawn_site_probes(site_tx: &mpsc::UnboundedSender<(usize, sites::Site)>) {
         let server = resolver.ip;
         tokio::spawn(async move {
             if let Some(site) = sites::discover(probe, server).await {
-                let _ = site_tx.send((index, site));
+                let _ = site_tx.send((server, site));
             }
         });
     }
 }
 
-fn spawn_round(tx: &mpsc::UnboundedSender<QueryOutcome>, round: app::Round) {
+fn spawn_round(app: &App, tx: &mpsc::UnboundedSender<QueryOutcome>, round: app::Round) {
     for resolver_index in round.indices {
         let tx = tx.clone();
         let domain = round.domain.clone();
         let (rtype, ecs, generation) = (round.rtype, round.ecs, round.generation);
-        let server: IpAddr = resolvers::active()[resolver_index].ip;
+        let server: IpAddr = app.resolvers[resolver_index].ip;
         tokio::spawn(async move {
             let (result, elapsed, ecs_honored) = dns::query(server, domain, rtype, ecs).await;
             let _ = tx.send(QueryOutcome {
@@ -411,7 +468,7 @@ async fn run_once(domain: String, rtype: RecordType, ecs_list: Vec<ClientSubnet>
 
     // Site probes run concurrently with the first query round.
     let mut probes = tokio::task::JoinSet::new();
-    for (index, resolver) in resolvers::active().iter().enumerate() {
+    for (index, resolver) in app.resolvers.iter().enumerate() {
         if let Some(probe) = resolver.probe {
             let server = resolver.ip;
             probes.spawn(async move { (index, sites::discover(probe, server).await) });
@@ -436,7 +493,7 @@ async fn run_once(domain: String, rtype: RecordType, ecs_list: Vec<ClientSubnet>
         for resolver_index in round.indices {
             let domain = round.domain.clone();
             let (rtype, ecs, generation) = (round.rtype, round.ecs, round.generation);
-            let server: IpAddr = resolvers::active()[resolver_index].ip;
+            let server: IpAddr = app.resolvers[resolver_index].ip;
             tasks.spawn(async move {
                 let (result, elapsed, ecs_honored) = dns::query(server, domain, rtype, ecs).await;
                 QueryOutcome {
@@ -496,7 +553,7 @@ fn print_round(app: &App, summary: &app::Summary, multi: bool) {
         None => println!("{domain} {rtype}\n"),
     }
 
-    for (i, (resolver, row)) in resolvers::active().iter().zip(&app.rows).enumerate() {
+    for (i, (resolver, row)) in app.resolvers.iter().zip(&app.rows).enumerate() {
         let line = match row {
             app::RowState::Done {
                 result,

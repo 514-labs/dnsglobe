@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Resolvers can be added and removed at runtime: `+` opens an add-resolver
+  dialog (name and IP, plus optional location and map coordinates, validated
+  like the config file), ↑/↓ highlight a row in the table, and Ctrl+X
+  removes the highlighted resolver. Changes last for the session; permanent
+  resolvers still belong in the config file. A resolver added mid-watch is
+  queried immediately and joins the propagation math.
+  ([#30](https://github.com/514-labs/dnsglobe/pull/30))
 - EDNS Client Subnet (RFC 7871) support: `--ecs 203.0.113.0/24` (or
   `ecs = [...]` in the config file) attaches that client subnet to every
   query, so GeoDNS zones answer for that network instead of each resolver's
@@ -45,6 +52,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- ↑/↓ (and PageUp/PageDown) move a highlight through the resolver table
+  instead of scrolling it directly; the view scrolls along to keep the
+  highlight visible. ([#30](https://github.com/514-labs/dnsglobe/pull/30))
 - Tab / Shift-Tab now re-query the checked domain with the newly selected
   record type right away, instead of waiting for Enter — matching the new
   Ctrl+N behavior for ECS subnets.
