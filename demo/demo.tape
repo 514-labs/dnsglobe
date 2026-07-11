@@ -3,7 +3,7 @@ Output demo/demo.gif
 
 Set Shell "bash"
 Set FontSize 13
-Set Width 1400
+Set Width 1600
 Set Height 780
 Set Padding 12
 Set TypingSpeed 60ms
@@ -27,3 +27,7 @@ Tab
 Sleep 1s
 Enter
 Sleep 7s
+
+# morph the flat map into the rotating globe
+Ctrl+O
+Sleep 6s

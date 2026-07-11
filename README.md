@@ -9,7 +9,7 @@
 queries 34 public DNS resolvers around the world in parallel, compares their
 answers, and shows the propagation of your record on a world map.
 
-![dnsglobe demo — checking A and NS records for a domain across 34 resolvers worldwide](demo/demo.gif)
+![dnsglobe demo — checking A and NS records for a domain across 34 resolvers worldwide, then morphing the world map into a rotating globe](demo/demo.gif)
 
 Think dnschecker.org / whatsmydns.net, but in your terminal, with watch mode:
 start a check and it re-polls until the record has propagated everywhere.
@@ -27,9 +27,13 @@ consistent answer, not twenty conflicting ones. The propagation gauge shows
 how many resolvers are in the majority group; outliers are flagged
 `≠ DIFFERS` once all results are in.
 
-On terminals ≥150 columns wide, a world map appears on the right with one
-dot per resolver, colored by status (green agrees, magenta differs, red
-error, yellow in flight).
+When the terminal is wide enough, a view of the world appears on the right
+with one dot per resolver, colored by status (green agrees, magenta differs,
+red error, yellow in flight). The view adapts to the width: terminals ≥157
+columns get a flat world map, narrower ones (≥131 columns) get a spinning 3D
+globe, which needs fewer columns; resizing across the threshold morphs one
+into the other. Ctrl+O toggles map/globe by hand, and `--view auto|map|globe`
+(or `view = "..."` in the config file) forces a style outright.
 
 Anycast networks are asked which of their sites is answering you: Quad9
 (`TXT id.server.on.quad9.net`), Cloudflare (`CH TXT id.server`), Google
@@ -91,6 +95,7 @@ their own location, not the probed network.
 | +              | add a resolver for this session (name, IP, optional location and map position) |
 | Ctrl+X         | remove the highlighted resolver for this session |
 | Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
+| Ctrl+O         | toggle the world view between flat map and rotating globe |
 | Ctrl+N         | cycle the ECS client subnet and re-query (only when `--ecs`/config set one up) |
 | Ctrl+U         | clear domain                    |
 | Esc / Ctrl+C   | quit                            |
@@ -109,6 +114,10 @@ replace = false
 
 # EDNS Client Subnet(s) to query with (Ctrl+N cycles; --ecs overrides).
 ecs = ["203.0.113.0/24"]
+
+# World-view style: auto (default — pick by terminal width), map, or globe.
+# The --view flag overrides this.
+view = "auto"
 
 [[resolvers]]
 name = "Corp DNS"        # required — shown in the Resolver column
