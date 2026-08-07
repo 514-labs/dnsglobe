@@ -17,13 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `--ecs` runs accept exactly the same set of names; previously only
   `--ecs` handled these.
   ([#34](https://github.com/514-labs/dnsglobe/issues/34),
-  [#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+  [#37](https://github.com/514-labs/dnsglobe/pull/37))
 - A domain that really is malformed (an empty label, a label over 63
   characters) is now reported once — as a startup error for a name given on
   the command line, or in place of the propagation gauge for one typed in the
   TUI — instead of filling the table with one identical error per resolver,
   which read like a network outage.
-  ([#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+  ([#37](https://github.com/514-labs/dnsglobe/pull/37))
 
 ## [0.4.0] - 2026-07-11
 
