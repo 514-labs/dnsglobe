@@ -13,9 +13,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (Ping, TTL, Exp) are right-aligned so their digits line up, units that the
   header already implies are gone, and where there isn't room for the
   spelled-out status the verdict moves to a glyph in the left margin
-  (`✓ ≠ ! ↻ ∅ ✗`) — one place to scan for failures. Wider terminals are
-  unchanged: they keep the status word, the same answer column and the same
-  map/globe thresholds.
+  (`✓ ≠ ! ↻ ∅ ✗`) — one place to scan for failures. The round-trip column is
+  now headed `Ping` (it was `Time`). Wider terminals are unchanged: they keep
+  the status word, the same answer column and the same map/globe thresholds.
+  `--once` matches: it prints the same name/location/IP column widths as the
+  TUI and right-aligns its TTL, so the two views line up.
   ([#33](https://github.com/514-labs/dnsglobe/issues/33),
   [#40](https://github.com/514-labs/dnsglobe/pull/40))
 - The per-row expiry countdown is coarse: at most two digits and a unit
@@ -25,7 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   precise figure (`TTL ≈ 2h23m`).
   ([#33](https://github.com/514-labs/dnsglobe/issues/33),
   [#40](https://github.com/514-labs/dnsglobe/pull/40))
-- Failures now show as a white-on-red badge on the status glyph and word
+- Failures now show as a white-on-red badge — on the status glyph and word in
+  the table, and on the `not a domain name` label under a malformed input —
   rather than red text, which went washed-out on terminal themes with a
   mid-toned background (macOS Terminal's "Ocean"). Only the marker is
   filled — error messages, map dots, the propagation gauge and slow ping
@@ -72,7 +75,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tenth of it), and any resolver that reported one is named on the note line
   with what it claims — that cache really will serve the old answer after a
   change, and it is worth knowing which one it is.
-  ([#38](https://github.com/514-labs/dnsglobe/pull/38))
+  ([#35](https://github.com/514-labs/dnsglobe/issues/35),
+  [#38](https://github.com/514-labs/dnsglobe/pull/38))
 
 ## [0.4.0] - 2026-07-11
 
@@ -110,7 +114,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   toggles by hand and pins the choice; `--view auto|map|globe` or `view =
   "..."` in the config file force it outright (flag beats config).
   ([#26](https://github.com/514-labs/dnsglobe/pull/26))
-
 - Nix flake support: `nix run github:514-labs/dnsglobe` builds and runs
   dnsglobe from source on any system with Nix flakes enabled; specific
   releases can be pinned via git tag (`github:514-labs/dnsglobe/v0.3.0`).

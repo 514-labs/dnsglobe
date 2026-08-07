@@ -45,7 +45,8 @@ Configuration:
   # stale = \"208\"        #   stale, upstream, muted, coastline, grid
   # muted = \"faint\"      # colors: ANSI names (\"lightred\"), 256-color
   #                      #   indexes (\"208\"), or hex (\"#ff8700\"); `muted`
-  #                      #   also takes \"faint\" (dim the default foreground)";
+  #                      #   also takes \"faint\" (dim the default foreground)
+  # error = \"white on lightred\"  # \"<fg> on <bg>\" badges the failure marker";
 
 /// Global DNS propagation checker TUI — watch a DNS record propagate across
 /// public resolvers worldwide, on a world map in your terminal.
