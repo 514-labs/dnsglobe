@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Names with an underscore in the middle of a label are queried instead of
+  failing on every resolver with `protocol error: Label contains invalid
+  character`. Underscores are legal anywhere in a DNS label — the
+  letter-digit-hyphen rule is about *hostnames*, not the DNS wire format — so
+  the delegated SPF/DMARC hosts that EasyDMARC, Valimail and friends generate
+  (`_spf.514_ax._d.example.com`) now resolve like they do in `dig`. Default
+  and `--ecs` runs accept exactly the same set of names; previously only
+  `--ecs` handled these.
+  ([#34](https://github.com/514-labs/dnsglobe/issues/34),
+  [#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+- A domain that really is malformed (an empty label, a label over 63
+  characters) is now reported once — as a startup error for a name given on
+  the command line, or in place of the propagation gauge for one typed in the
+  TUI — instead of filling the table with one identical error per resolver,
+  which read like a network outage.
+  ([#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+
 ## [0.4.0] - 2026-07-11
 
 ### Added

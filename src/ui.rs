@@ -171,6 +171,17 @@ fn draw_gauge(frame: &mut Frame, app: &App, summary: &Summary, area: Rect) {
     let th = theme::active();
     let total = app.resolvers.len();
 
+    // Enter on something that isn't a DNS name never started a round, so the
+    // gauge below would be stale (or absent): say why instead.
+    if let Some(err) = &app.input_error {
+        let message = Paragraph::new(Line::from(vec![
+            Span::styled("  not a domain name: ", Style::new().fg(th.error).bold()),
+            Span::styled(err.as_str(), Style::new().fg(th.error)),
+        ]));
+        frame.render_widget(message, area);
+        return;
+    }
+
     if app.queried.is_none() {
         let hint = Paragraph::new(Line::from(Span::styled(
             "  type a domain and press Enter",
