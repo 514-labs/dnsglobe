@@ -1116,6 +1116,148 @@ impl App {
     }
 }
 
+/// Column widths for the resolver table, in the order `ui.rs` renders them.
+///
+/// Sized here rather than left to ratatui's constraint solver because which
+/// column gives way first is a judgement call worth testing: an 80-column
+/// terminal has to show a full IPv4 address and undamaged numbers, so the
+/// spelled-out status goes before a single digit does (issue #33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableLayout {
+    /// The one-glyph verdict at the left edge, so a scan down the margin
+    /// finds the failures.
+    pub mark: u16,
+    pub resolver: u16,
+    pub loc: u16,
+    pub ip: u16,
+    pub ping: u16,
+    pub ttl: u16,
+    pub exp: u16,
+    /// Zero when the spelled-out status had to go; the mark column still
+    /// carries the verdict.
+    pub status: u16,
+    pub answer: u16,
+}
+
+const COL_MARK: u16 = 1;
+const COL_PING: u16 = 5; // four digits of milliseconds under a "Ping" header
+const COL_TTL: u16 = 6; // a week in seconds, 604800
+const COL_EXP: u16 = 3; // the coarse countdown's widest, "99d"
+const COL_STATUS: u16 = 8; // "SERVFAIL" / "PAST TTL" / "UPSTREAM"
+/// Fixed, not sized to the configured locations: site discovery replaces any
+/// of them with a "→CODE" of its own, and `Site::code` caps at 7 characters.
+const COL_LOC: u16 = 8;
+const COL_IP_MIN: u16 = 15; // a full IPv4 literal — never cropped
+const COL_IP_MAX: u16 = 39; // a full IPv6 literal
+const COL_NAME_MIN: u16 = 10;
+const COL_NAME_MAX: u16 = 20;
+const COL_ANSWER_MIN: u16 = 16; // one full IPv4 literal, plus a space
+/// What the Answer column is worth on a terminal wide enough for a map panel
+/// too: a second address, or a long CNAME target. The table asks for this
+/// much before the panel takes the rest, so freeing columns for narrow
+/// terminals doesn't quietly hand the map a slice of the answers.
+const COL_ANSWER_ROOMY: u16 = 27;
+/// Everything whose width is fixed by the shape of its content.
+const COL_FIXED: u16 = COL_MARK + COL_LOC + COL_PING + COL_TTL + COL_EXP;
+/// The table's own borders.
+const COL_BORDERS: u16 = 2;
+
+impl TableLayout {
+    /// Widths that fit `width` columns of terminal, for this resolver list.
+    pub fn fit(width: u16, resolvers: &[Resolver]) -> Self {
+        let (mut resolver, mut ip) = content_widths(resolvers);
+        let mut status = COL_STATUS;
+        let inner = width.saturating_sub(COL_BORDERS);
+        let need = |resolver, ip, status| COL_FIXED + resolver + ip + status + spacing(status);
+
+        // Shed in the order that costs the least: first the spelled-out
+        // status (the mark glyph still names the verdict), then an IPv6
+        // resolver's full address, then the resolver name. The numbers, the
+        // 15 columns an IPv4 address needs, and the first answer are never
+        // touched — fitting those at 80 columns is the whole point.
+        if need(resolver, ip, status) + COL_ANSWER_MIN > inner {
+            status = 0;
+        }
+        if need(resolver, ip, status) + COL_ANSWER_MIN > inner {
+            ip = COL_IP_MIN;
+        }
+        let over = (need(resolver, ip, status) + COL_ANSWER_MIN).saturating_sub(inner);
+        resolver = resolver.saturating_sub(over).max(COL_NAME_MIN);
+
+        Self {
+            mark: COL_MARK,
+            resolver,
+            loc: COL_LOC,
+            ip,
+            ping: COL_PING,
+            ttl: COL_TTL,
+            exp: COL_EXP,
+            status,
+            // Whatever is left: the answer is the column that grows on a
+            // wide terminal, since it's the only one with unbounded content.
+            answer: inner
+                .saturating_sub(need(resolver, ip, status))
+                .max(COL_ANSWER_MIN),
+        }
+    }
+
+    /// Width `ui.rs` reserves for the table before handing what's left to the
+    /// map panel: every column at its full size, borders included.
+    pub fn reserved_width(resolvers: &[Resolver]) -> u16 {
+        let (resolver, ip) = content_widths(resolvers);
+        COL_FIXED
+            + resolver
+            + ip
+            + COL_STATUS
+            + COL_ANSWER_ROOMY
+            + spacing(COL_STATUS)
+            + COL_BORDERS
+    }
+}
+
+/// One space between each pair of rendered columns; the status column drops
+/// out entirely when it has no width, taking its gap with it.
+fn spacing(status: u16) -> u16 {
+    if status == 0 { 7 } else { 8 }
+}
+
+/// Name and IP widths the current list would like: enough for its widest
+/// entry, clamped so one long custom name can't eat the answer.
+fn content_widths(resolvers: &[Resolver]) -> (u16, u16) {
+    let widest = |f: fn(&Resolver) -> usize| -> u16 {
+        resolvers
+            .iter()
+            .map(f)
+            .max()
+            .unwrap_or(0)
+            .try_into()
+            .unwrap_or(u16::MAX)
+    };
+    (
+        widest(|r| r.name.chars().count()).clamp(COL_NAME_MIN, COL_NAME_MAX),
+        widest(|r| r.ip.to_string().len()).clamp(COL_IP_MIN, COL_IP_MAX),
+    )
+}
+
+/// Coarse countdown for the per-row Exp column: at most two digits and a
+/// unit, `59s` → `1m` → `59m` → `1h` → `23h` → `1d` → `99d`.
+///
+/// The table shows one of these per resolver, and a whole column of seconds
+/// ticking out of unison is a distraction with no payoff: above a minute the
+/// exact second never changes what you'd do (issue #33). Truncating rather
+/// than rounding keeps the reading a lower bound — `1m` means at least a
+/// minute is left. Past 99 days it saturates: DNS TTLs that long are a
+/// configuration accident, and the precise figure is in the TTL column and
+/// the advisory note anyway.
+pub fn fmt_countdown(total: u64) -> String {
+    match total {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3_600),
+        s => format!("{}d", (s / 86_400).min(99)),
+    }
+}
+
 /// Compact human duration for countdowns and TTLs: `42s`, `4m10s`, `23h59m`,
 /// `2d3h`. Two units max keeps it within a narrow table column.
 pub fn fmt_secs(total: u64) -> String {
@@ -1400,6 +1542,97 @@ mod tests {
         assert_eq!(app.view_mode, ViewMode::Map);
         app.sync_view(120);
         assert!(!app.globe.target());
+    }
+
+    #[test]
+    fn countdown_is_two_digits_and_a_unit() {
+        // Every step of the ladder the issue asked for.
+        for (secs, want) in [
+            (1, "1s"),
+            (59, "59s"),
+            (60, "1m"),
+            (3_599, "59m"),
+            (3_600, "1h"),
+            (86_399, "23h"),
+            (86_400, "1d"),
+            (99 * 86_400, "99d"),
+        ] {
+            assert_eq!(fmt_countdown(secs), want, "{secs}s");
+        }
+        // Truncating, not rounding: "1m" means at least a minute is left.
+        assert_eq!(fmt_countdown(119), "1m");
+        assert_eq!(fmt_countdown(0), "0s");
+        // Saturates rather than widening the column for an absurd TTL.
+        assert_eq!(fmt_countdown(100 * 86_400), "99d");
+        assert_eq!(fmt_countdown(u64::MAX), "99d");
+        // Never wider than three cells, whatever it's handed.
+        for secs in [0, 59, 60, 3_599, 3_600, 86_399, 86_400, u64::MAX] {
+            assert!(fmt_countdown(secs).len() <= 3, "{secs}");
+        }
+    }
+
+    #[test]
+    fn table_fits_every_field_at_eighty_columns() {
+        let resolvers = resolvers::defaults();
+        let layout = TableLayout::fit(80, &resolvers);
+        // The numbers and a full IPv4 address survive; the spelled-out
+        // status is what gave way, and one whole answer still fits.
+        assert_eq!(layout.ip, COL_IP_MIN);
+        assert_eq!(layout.ping, COL_PING);
+        assert_eq!(layout.ttl, COL_TTL);
+        assert_eq!(layout.exp, COL_EXP);
+        assert_eq!(layout.status, 0);
+        assert!(layout.answer >= COL_ANSWER_MIN);
+        assert!(layout.resolver >= COL_NAME_MIN);
+
+        let total = layout.mark
+            + layout.resolver
+            + layout.loc
+            + layout.ip
+            + layout.ping
+            + layout.ttl
+            + layout.exp
+            + layout.answer
+            + spacing(layout.status)
+            + COL_BORDERS;
+        assert_eq!(total, 80);
+    }
+
+    #[test]
+    fn table_spends_extra_width_on_the_answer() {
+        let resolvers = resolvers::defaults();
+        // The width reserved beside a map panel shows every column whole,
+        // with the roomy answer — no narrower than it was before issue #33.
+        let reserved = TableLayout::reserved_width(&resolvers);
+        let wide = TableLayout::fit(reserved, &resolvers);
+        assert_eq!(wide.status, COL_STATUS);
+        assert_eq!(wide.answer, COL_ANSWER_ROOMY);
+        assert_eq!(wide.resolver, COL_NAME_MAX);
+
+        // Past that, only the answer grows — nothing else moves.
+        let roomier = TableLayout::fit(reserved + 40, &resolvers);
+        assert_eq!(roomier.answer, COL_ANSWER_ROOMY + 40);
+        assert_eq!(roomier.resolver, wide.resolver);
+        assert_eq!(roomier.ip, wide.ip);
+    }
+
+    #[test]
+    fn ipv6_resolvers_get_their_full_address_only_when_it_fits() {
+        let mut resolvers = resolvers::defaults();
+        resolvers.push(Resolver {
+            name: "Custom v6".into(),
+            location: "EU".into(),
+            ip: "2606:4700:4700::1111".parse().unwrap(),
+            coords: None,
+            probe: None,
+        });
+        // Wide: the address is shown whole, so the table simply asks for
+        // more room and the map panel gets what's left.
+        let reserved = TableLayout::reserved_width(&resolvers);
+        assert_eq!(TableLayout::fit(reserved, &resolvers).ip, 20);
+        // Narrow: it falls back to IPv4 width and ratatui clips the tail —
+        // the alternative is cropping the columns the issue asked us to fit.
+        assert_eq!(TableLayout::fit(80, &resolvers).ip, COL_IP_MIN);
     }
 
     #[test]

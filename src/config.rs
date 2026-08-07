@@ -151,7 +151,6 @@ fn build_theme(table: ThemeTable) -> Result<Theme> {
         ("accent", table.accent, &mut out.accent),
         ("agree", table.agree, &mut out.agree),
         ("differ", table.differ, &mut out.differ),
-        ("error", table.error, &mut out.error),
         ("pending", table.pending, &mut out.pending),
         ("stale", table.stale, &mut out.stale),
         ("upstream", table.upstream, &mut out.upstream),
@@ -161,6 +160,10 @@ fn build_theme(table: ThemeTable) -> Result<Theme> {
         if let Some(value) = value {
             *slot = theme::parse_color(&value).with_context(|| format!("theme.{key}"))?;
         }
+    }
+    // `error` renders as a badge, so it also accepts "<fg> on <bg>".
+    if let Some(value) = table.error {
+        out.error = theme::parse_paint(&value).context("theme.error")?;
     }
     if let Some(value) = table.muted {
         out.muted = theme::parse_muted(&value).context("theme.muted")?;
@@ -370,6 +373,28 @@ mod tests {
         let chain = format!("{err:#}");
         assert!(chain.contains("theme.stale"), "{chain}");
         assert!(chain.contains("\"ornage\""), "{chain}");
+    }
+
+    #[test]
+    fn error_role_takes_a_background_and_reports_its_own_key() {
+        let badge = theme("[theme]\nerror = \"black on yellow\"").unwrap();
+        assert_eq!(
+            badge.error,
+            crate::theme::Paint::on(ratatui::style::Color::Black, ratatui::style::Color::Yellow)
+        );
+        // A bare color still works, and drops back to no background.
+        let plain = theme("[theme]\nerror = \"lightred\"").unwrap();
+        assert_eq!(
+            plain.error,
+            crate::theme::Paint::color(ratatui::style::Color::LightRed)
+        );
+
+        let chain = format!(
+            "{:#}",
+            theme("[theme]\nerror = \"white on rd\"").unwrap_err()
+        );
+        assert!(chain.contains("theme.error"), "{chain}");
+        assert!(chain.contains("\"rd\""), "{chain}");
     }
 
     #[test]

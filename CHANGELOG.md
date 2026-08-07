@@ -8,6 +8,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The resolver table now fits an 80-column terminal without cropping
+  anything that matters: resolver IPs are shown in full, the numeric columns
+  (Ping, TTL, Exp) are right-aligned so their digits line up, units that the
+  header already implies are gone, and where there isn't room for the
+  spelled-out status the verdict moves to a glyph in the left margin
+  (`✓ ≠ ! ↻ ∅ ✗`) — one place to scan for failures. Wider terminals are
+  unchanged: they keep the status word, the same answer column and the same
+  map/globe thresholds.
+  ([#33](https://github.com/514-labs/dnsglobe/issues/33),
+  [#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+- The per-row expiry countdown is coarse: at most two digits and a unit
+  (`59s`, `1m`, `59m`, `1h`, `23h`, `1d`, `99d`). A whole column of seconds
+  ticking out of unison was a distraction, and above a minute the exact
+  second never changed what you'd do. The TTL advisory notes still quote the
+  precise figure (`TTL ≈ 2h23m`).
+  ([#33](https://github.com/514-labs/dnsglobe/issues/33),
+  [#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+- Failures now show as a white-on-red badge on the status glyph and word
+  rather than red text, which went washed-out on terminal themes with a
+  mid-toned background (macOS Terminal's "Ocean"). Only the marker is
+  filled — error messages, map dots, the propagation gauge and slow ping
+  times keep the plain red, so the table doesn't turn into a wall of red
+  bars. `theme.error` accepts the new `"<fg> on <bg>"` form (for example
+  `error = "black on 208"`); a plain color still works and means no badge.
+  ([#33](https://github.com/514-labs/dnsglobe/issues/33),
+  [#XX](https://github.com/514-labs/dnsglobe/pull/XX))
 - Anycast site discovery now asks every resolver for its NSID (RFC 5001)
   first — a standard EDNS option servers answer with their own node name —
   and only falls back to the old operator-specific `id.server` probes when
