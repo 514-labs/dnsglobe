@@ -104,7 +104,7 @@ their own location, not the probed network.
 | ↑/↓ / PgUp/PgDn | move the highlight through the resolver table (scrolls to follow) |
 | +              | add a resolver for this session (name, IP, optional location and map position) |
 | Ctrl+X         | remove the highlighted resolver for this session |
-| Ctrl+S         | cycle table sort: resolver / location / time / status / answer |
+| Ctrl+S         | cycle table sort: resolver / location / ping / status / answer |
 | Ctrl+O         | toggle the world view between flat map and rotating globe |
 | Ctrl+N         | cycle the ECS client subnet and re-query (only when `--ecs`/config set one up) |
 | Ctrl+U         | clear domain                    |
@@ -187,7 +187,7 @@ The project provides optional Nix flake outputs for users who already use Nix. T
 nix run github:514-labs/dnsglobe
 
 # Specific release (uses the flake at that git tag)
-nix run github:514-labs/dnsglobe/v0.3.1
+nix run github:514-labs/dnsglobe/v0.4.0
 
 # Named outputs (if the flake exposes them): #latest, #source
 nix run github:514-labs/dnsglobe#source

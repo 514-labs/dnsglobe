@@ -10,12 +10,15 @@ human contributor.
 | File | Owns |
 |---|---|
 | `src/main.rs` | CLI (clap), event loop, key handling, `--once` mode |
-| `src/app.rs` | `App` state, input editing, answer grouping, TTL verdicts |
+| `src/app.rs` | `App` state, input editing, answer grouping, TTL verdicts, table column layout |
 | `src/ui.rs` | All rendering: map, table, gauge, footer |
+| `src/theme.rs` | UI color roles, `Paint`/`Muted` parsing |
+| `src/globe.rs` | Orthographic globe projection and panel geometry |
+| `src/world_data.rs` | Coastline vector data |
 | `src/dns.rs` | Resolver queries and error mapping |
 | `src/resolvers.rs` | Built-in resolver list |
-| `src/config.rs` | TOML config file (custom resolvers) |
-| `src/sites.rs` | Anycast POP discovery (id.server probes, IATA codes) |
+| `src/config.rs` | TOML config file (resolvers, theme, ecs, view) |
+| `src/sites.rs` | Anycast POP discovery (NSID, id.server fallback, IATA codes) |
 
 Keep logic in `app.rs` (testable, no I/O) and rendering in `ui.rs`. Key
 bindings live in `handle_key` in `main.rs` and should call one-line `App`

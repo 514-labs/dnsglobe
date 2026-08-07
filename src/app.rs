@@ -79,7 +79,7 @@ impl SortMode {
         match self {
             SortMode::Resolver => "resolver",
             SortMode::Location => "location",
-            SortMode::Time => "time",
+            SortMode::Time => "ping",
             SortMode::Status => "status",
             SortMode::Answer => "answer",
         }
