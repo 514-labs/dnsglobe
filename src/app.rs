@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use hickory_resolver::proto::rr::RecordType;
 
-use crate::dns::{ClientSubnet, QueryOutcome, QueryResult};
+use crate::dns::{self, ClientSubnet, QueryOutcome, QueryResult};
 use crate::globe::GlobeView;
 use crate::resolvers::{self, Resolver};
 use crate::sites::Site;
@@ -307,6 +307,21 @@ impl ResolverForm {
     }
 }
 
+/// Normalize a typed-or-passed domain and check that it is a name we can put
+/// on the wire: trailing whitespace and the root dot go (`example.com.` and
+/// `example.com` are the same name), then `dns::parse_name` has the final
+/// say. Shared by the CLI and the TUI input field so both modes accept
+/// exactly the same set of names, and so a malformed one is reported once
+/// rather than as an identical failure on every resolver. An empty input is
+/// "nothing to query", not an error — callers treat it as a no-op.
+pub fn validate_domain(input: &str) -> Result<String, String> {
+    let domain = input.trim().trim_end_matches('.').to_string();
+    if !domain.is_empty() {
+        dns::parse_name(&domain)?;
+    }
+    Ok(domain)
+}
+
 pub struct App {
     pub domain: String,
     /// Cursor position in `domain`. The input only accepts ASCII
@@ -357,6 +372,11 @@ pub struct App {
     pub selected: Option<usize>,
     /// Add-resolver dialog; while open it captures all key input.
     pub form: Option<ResolverForm>,
+    /// Why the last Enter didn't start a round: the input isn't a DNS name.
+    /// Shown in place of the gauge and cleared by the next edit — firing the
+    /// round anyway would fill the table with 30-odd identical parse errors
+    /// that read like a network outage.
+    pub input_error: Option<String>,
 }
 
 impl App {
@@ -386,6 +406,7 @@ impl App {
             resolvers,
             selected: None,
             form: None,
+            input_error: None,
         }
     }
 
@@ -542,18 +563,21 @@ impl App {
     pub fn insert_char(&mut self, c: char) {
         self.domain.insert(self.cursor, c);
         self.cursor += 1;
+        self.input_error = None;
     }
 
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
             self.domain.remove(self.cursor);
+            self.input_error = None;
         }
     }
 
     pub fn delete(&mut self) {
         if self.cursor < self.domain.len() {
             self.domain.remove(self.cursor);
+            self.input_error = None;
         }
     }
 
@@ -592,6 +616,7 @@ impl App {
     pub fn clear_domain(&mut self) {
         self.domain.clear();
         self.cursor = 0;
+        self.input_error = None;
     }
 
     /// The view this width calls for under the active policy.
@@ -665,9 +690,18 @@ impl App {
     }
 
     /// Arm a new query round. Returns what to query (all resolvers), or None
-    /// if the domain input is empty.
+    /// if the domain input is empty or isn't a DNS name — the latter leaves
+    /// `input_error` set for the header to show, and the previous round's
+    /// rows untouched.
     pub fn begin_query(&mut self) -> Option<Round> {
-        let domain = self.domain.trim().trim_end_matches('.').to_string();
+        let domain = match validate_domain(&self.domain) {
+            Ok(domain) => domain,
+            Err(err) => {
+                self.input_error = Some(err);
+                return None;
+            }
+        };
+        self.input_error = None;
         if domain.is_empty() {
             return None;
         }
@@ -1043,6 +1077,60 @@ mod tests {
             })
             .collect();
         app
+    }
+
+    #[test]
+    fn underscored_names_are_queryable() {
+        // Issue #34: an underscore anywhere in a label is legal on the wire,
+        // so these must reach the resolvers instead of failing to parse.
+        for input in [
+            "foo_bar.example.com",
+            "_dmarc.514.ax",
+            "_spf.514_ax._d.easydmarc.pro",
+        ] {
+            let mut app = App::new(input.into());
+            let round = app.begin_query().expect("should arm a round");
+            assert_eq!(round.domain, input);
+            assert_eq!(app.input_error, None);
+        }
+    }
+
+    #[test]
+    fn validate_domain_normalizes_input() {
+        // The root dot and stray whitespace are noise, not part of the name.
+        assert_eq!(validate_domain("  example.com. ").unwrap(), "example.com");
+        // Empty input is a no-op, not an error.
+        assert_eq!(validate_domain("   ").unwrap(), "");
+    }
+
+    #[test]
+    fn malformed_name_is_reported_once_and_queries_nothing() {
+        let mut app = App::new("a..b.example.com".into());
+        assert!(app.begin_query().is_none());
+        // One user-facing message, and no round — so no table full of
+        // identical per-resolver parse errors.
+        assert!(app.input_error.is_some());
+        assert_eq!(app.generation, 0);
+        assert!(app.rows.iter().all(|row| matches!(row, RowState::Idle)));
+        assert!(app.queried.is_none());
+
+        // Editing the input clears the complaint, and a valid name arms a
+        // round again.
+        app.backspace();
+        assert_eq!(app.input_error, None);
+        app.clear_domain();
+        for c in "example.com".chars() {
+            app.insert_char(c);
+        }
+        assert!(app.begin_query().is_some());
+        assert_eq!(app.input_error, None);
+    }
+
+    #[test]
+    fn empty_input_is_not_an_error() {
+        let mut app = App::new(String::new());
+        assert!(app.begin_query().is_none());
+        assert_eq!(app.input_error, None);
     }
 
     #[test]

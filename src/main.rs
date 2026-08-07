@@ -112,10 +112,21 @@ async fn main() -> Result<()> {
     resolvers::init(settings.resolvers);
     theme::init(settings.theme);
 
+    // A name that can't go on the wire is a user error, so say so once here —
+    // before the terminal enters raw mode — instead of letting every resolver
+    // report the same parse failure and look like a network outage.
+    let domain = cli
+        .domain
+        .map(|domain| {
+            app::validate_domain(&domain)
+                .map_err(|err| anyhow::anyhow!("invalid domain name {domain:?}: {err}"))
+        })
+        .transpose()?;
+
     // `--once` runs a single check and prints plain text — handy for scripts
     // and for testing without a TTY.
     if cli.once {
-        let domain = cli.domain.expect("clap enforces `requires`");
+        let domain = domain.expect("clap enforces `requires`");
         return run_once(domain, cli.record_type.unwrap_or(RecordType::A), ecs_list).await;
     }
 
@@ -134,7 +145,7 @@ async fn main() -> Result<()> {
     }
     let result = run_tui(
         terminal,
-        cli.domain.unwrap_or_default(),
+        domain.unwrap_or_default(),
         cli.record_type,
         view,
         ecs_list,

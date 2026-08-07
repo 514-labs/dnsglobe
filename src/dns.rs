@@ -53,6 +53,20 @@ pub struct QueryOutcome {
     pub ecs_honored: Option<bool>,
 }
 
+/// Parse user input into a queryable name.
+///
+/// Underscores are legal in a DNS label wherever they appear, not only at
+/// the start: letter-digit-hyphen is a *hostname* rule (RFC 952, RFC 1123
+/// §2.1), while the wire format (RFC 1035 §3.1) treats a label as opaque
+/// octets. Real zones lean on that — the delegated SPF/DMARC hosts that
+/// EasyDMARC and friends hand out look like `_spf.514_ax._d.example.com`.
+/// hickory's `IntoName for &str` goes through the strict `Name::from_str`,
+/// which enforces the hostname rule, so every query path parses relaxed
+/// here instead and hands the resulting `Name` to the resolver.
+pub fn parse_name(domain: &str) -> Result<Name, String> {
+    Name::from_str_relaxed(domain).map_err(|err| err.to_string())
+}
+
 /// One-server resolver going straight at `server` (no cache, single attempt)
 /// so that server's own view of a record is what we measure.
 fn build_resolver(server: IpAddr) -> Result<TokioResolver, NetError> {
@@ -84,13 +98,22 @@ pub async fn query(
     rtype: RecordType,
     ecs: Option<ClientSubnet>,
 ) -> (QueryResult, Duration, Option<bool>) {
+    // Parsed once here so both paths agree on what is queryable. Callers
+    // validate the name up front (a malformed one is a user error worth
+    // reporting once, not 34 identical row failures), so this arm is a
+    // backstop.
+    let name = match parse_name(&domain) {
+        Ok(name) => name,
+        Err(err) => return (QueryResult::Error(short_error(err)), Duration::ZERO, None),
+    };
+
     // ECS can't ride the high-level resolver (it has no per-query EDNS
     // hook), so those queries take the raw-message path instead.
     if let Some(subnet) = ecs {
         let start = Instant::now();
         let outcome = tokio::time::timeout(
             QUERY_TIMEOUT + Duration::from_secs(1),
-            ecs_query(server, &domain, rtype, subnet),
+            ecs_query(server, name, rtype, subnet),
         )
         .await
         .unwrap_or((QueryResult::Error("timeout".into()), None));
@@ -111,7 +134,7 @@ pub async fn query(
     let start = Instant::now();
     let lookup = tokio::time::timeout(
         QUERY_TIMEOUT + Duration::from_secs(1),
-        resolver.lookup(domain.as_str(), rtype),
+        resolver.lookup(name, rtype),
     )
     .await;
     let elapsed = start.elapsed();
@@ -215,15 +238,15 @@ pub fn fmt_ecs(subnet: &ClientSubnet) -> String {
 }
 
 /// Recursive query carrying the client subnet in an EDNS OPT record.
-fn ecs_message(domain: &str, rtype: RecordType, subnet: ClientSubnet) -> Option<Message> {
+fn ecs_message(name: Name, rtype: RecordType, subnet: ClientSubnet) -> Message {
     let mut message = Message::query();
     message.metadata.recursion_desired = true;
-    message.add_query(Query::query(Name::from_str_relaxed(domain).ok()?, rtype));
+    message.add_query(Query::query(name, rtype));
     let mut edns = Edns::new();
     edns.set_max_payload(EDNS_PAYLOAD);
     edns.options_mut().insert(EdnsOption::Subnet(subnet));
     message.edns = Some(edns);
-    Some(message)
+    message
 }
 
 /// Map a raw response to the same `QueryResult` the resolver path yields,
@@ -250,13 +273,11 @@ fn classify_ecs_response(response: &Message, rtype: RecordType) -> (QueryResult,
 
 async fn ecs_query(
     server: IpAddr,
-    domain: &str,
+    name: Name,
     rtype: RecordType,
     subnet: ClientSubnet,
 ) -> (QueryResult, Option<bool>) {
-    let Some(message) = ecs_message(domain, rtype, subnet) else {
-        return (QueryResult::Error("invalid name".into()), None);
-    };
+    let message = ecs_message(name, rtype, subnet);
     match exchange(server, &message).await {
         Ok(response) => classify_ecs_response(&response, rtype),
         Err(err) => (err, None),
@@ -495,9 +516,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_name_accepts_underscores_anywhere() {
+        // Underscores are a wire-format non-issue (RFC 1035 §3.1); only the
+        // *hostname* rules forbid them. Leading ones (`_dmarc`) always
+        // worked; mid-label ones are what issue #34 was about.
+        assert_eq!(
+            parse_name("_dmarc.514.ax").unwrap().to_string(),
+            "_dmarc.514.ax"
+        );
+        assert_eq!(
+            parse_name("foo_bar.example.com").unwrap().to_string(),
+            "foo_bar.example.com"
+        );
+        // A delegated SPF host, the shape that motivated the fix.
+        assert_eq!(
+            parse_name("_spf.514_ax._d.easydmarc.pro")
+                .unwrap()
+                .to_string(),
+            "_spf.514_ax._d.easydmarc.pro"
+        );
+        // Ordinary names and a trailing root dot still parse.
+        assert_eq!(
+            parse_name("foo-bar.example.com.").unwrap().to_string(),
+            "foo-bar.example.com."
+        );
+    }
+
+    #[test]
+    fn parse_name_rejects_malformed_names() {
+        // An empty label and a label over the 63-octet limit are wire-format
+        // violations, so relaxed parsing still turns them down.
+        assert!(parse_name("a..b.example.com").is_err());
+        assert!(parse_name(&format!("{}.com", "a".repeat(64))).is_err());
+        assert!(parse_name("ex@mple.com").is_err());
+    }
+
+    #[test]
     fn ecs_message_carries_the_subnet_option() {
         let subnet = parse_ecs("203.0.113.0/24").unwrap();
-        let message = ecs_message("example.com", RecordType::A, subnet).unwrap();
+        let message = ecs_message(parse_name("example.com").unwrap(), RecordType::A, subnet);
         assert!(message.metadata.recursion_desired);
         let edns = message.edns.as_ref().unwrap();
         assert_eq!(
