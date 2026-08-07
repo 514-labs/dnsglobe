@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Anycast site discovery now asks every resolver for its NSID (RFC 5001)
+  first — a standard EDNS option servers answer with their own node name —
+  and only falls back to the old operator-specific `id.server` probes when
+  that names no place. More resolvers report where they actually answered
+  from: Lumen shows `→JFK`, CIRA Canadian Shield `→YYZ`, DNS4EU `→AMS` and
+  DNS.SB `→KIX` where they used to show only the operator's home region.
+  Resolvers you add yourself in the config file can now report a site too,
+  since NSID needs no per-operator support, and Google's site takes one
+  query instead of two. Nothing that already resolved to a site changed.
+  ([#36](https://github.com/514-labs/dnsglobe/issues/36),
+  [#39](https://github.com/514-labs/dnsglobe/pull/39))
+
 ### Fixed
 
 - Names with an underscore in the middle of a label are queried instead of

@@ -1,10 +1,19 @@
 //! Anycast site discovery: ask a resolver *which* of its sites answered.
 //!
-//! Large anycast networks expose an identification query — Quad9 answers
-//! `TXT id.server.on.quad9.net`, Cloudflare answers `CH TXT id.server`,
-//! Google reports its egress subnet, OpenDNS has `TXT debug.opendns.com`.
-//! The answer names the POP (usually by IATA airport code), telling you
-//! where your queries actually land instead of the operator's home region.
+//! The general answer is NSID (RFC 5001): an EDNS option every query can
+//! carry, which the answering node fills with its own identity string —
+//! `gpdns-yul` (Google), `yul01` (Cloudflare), `res721.qyul1` (Quad9),
+//! `jfk-dns1-02.inet.centurylink.net` (Lumen). One option on one query, no
+//! per-operator special casing, and it works on servers that never
+//! implemented an identification *query*. See
+//! <https://github.com/514-labs/dnsglobe/issues/36>.
+//!
+//! Where NSID names no recognizable place, the operator-specific probes stay
+//! as the fallback — Quad9 answers `TXT id.server.on.quad9.net`, Cloudflare
+//! answers `CH TXT id.server`, Google reports its egress subnet, OpenDNS has
+//! `TXT debug.opendns.com`. Either way the answer names the POP (usually by
+//! IATA airport code), telling you where your queries actually land instead
+//! of the operator's home region.
 //! See <https://github.com/514-labs/dnsglobe/issues/6>.
 
 use std::net::IpAddr;
@@ -48,10 +57,25 @@ impl Site {
     }
 }
 
-/// Run one resolver's identification query. None means the probe failed or
-/// the answer was unparseable — the resolver keeps its configured location.
-pub async fn discover(probe: SiteProbe, server: IpAddr) -> Option<Site> {
-    match probe {
+/// Identify the answering node. NSID goes first — it costs one query, needs
+/// no operator-specific support, and is the only thing we can ask a resolver
+/// the user added themselves (those carry no `probe`). When it names no
+/// place we fall back to the operator's identification query, and when that
+/// fails too the resolver keeps its configured location.
+pub async fn discover(probe: Option<SiteProbe>, server: IpAddr) -> Option<Site> {
+    if let Some(id) = dns::nsid(server).await {
+        if let Some(site) = parse_nsid(&id) {
+            return Some(site);
+        }
+        // Operators with a free-form site name publish the same string over
+        // NSID as over `id.server`, so asking again would only repeat it.
+        if probe == Some(SiteProbe::ChIdServer)
+            && let Some(site) = parse_freeform(std::slice::from_ref(&id))
+        {
+            return Some(site);
+        }
+    }
+    match probe? {
         SiteProbe::Quad9 => {
             let strings = dns::txt_strings(server, "id.server.on.quad9.net").await?;
             parse_quad9(&strings)
@@ -74,6 +98,38 @@ pub async fn discover(probe: SiteProbe, server: IpAddr) -> Option<Site> {
             parse_freeform(&strings)
         }
     }
+}
+
+/// Pull the POP out of an NSID string. Operators encode it as one label of
+/// an otherwise free-form host name — `gpdns-yul`, `yul01`, `res721.qyul1`,
+/// `r2005.yyz`, `CS-YYZ3`, `dns4eu-ams-01`, `jp-kix-5` — so scan the labels
+/// left to right and take the first that is a known airport.
+///
+/// Requiring a *known* airport is the point: plenty of NSID strings are pure
+/// infrastructure (`pdns-recursor-58b7c5d77d-bjzkj`, `tserv21`, `230@dns9`),
+/// and inventing a location from those would be worse than showing the
+/// operator's configured region.
+fn parse_nsid(id: &str) -> Option<Site> {
+    id.split(|c: char| !c.is_ascii_alphanumeric())
+        .find_map(iata_in_label)
+        .map(|code| Site::from_code(&code))
+}
+
+/// A known airport code inside one NSID label, if any. Node numbering is
+/// suffixed (`yul01`, `yyz3`), and Quad9 prefixes its POPs with `q`
+/// (`qyul1`), so both forms reduce to a bare three-letter code.
+fn iata_in_label(label: &str) -> Option<String> {
+    let stem = label.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !stem.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let code = match stem.len() {
+        3 => stem,
+        4 if stem.starts_with(['q', 'Q']) => &stem[1..],
+        _ => return None,
+    }
+    .to_ascii_uppercase();
+    airport_coords(&code).is_some().then_some(code)
 }
 
 /// `res120.qyul1.on.quad9.net` → the label starting with `q` names the POP:
@@ -466,6 +522,43 @@ mod tests {
             assert!(code.chars().all(|c| c.is_ascii_uppercase()));
             assert!((-90.0..=90.0).contains(&lat), "{code} lat");
             assert!((-180.0..=180.0).contains(&lon), "{code} lon");
+        }
+    }
+
+    /// Every string here was captured off the wire with `dig +nsid`.
+    #[test]
+    fn real_nsid_strings_yield_their_pop() {
+        for (id, code) in [
+            ("gpdns-yul", "YUL"),                        // Google
+            ("yul01", "YUL"),                            // Cloudflare
+            ("res721.qyul1", "YUL"),                     // Quad9
+            ("r2005.yyz", "YYZ"),                        // OpenDNS
+            ("jfk-dns1-02.inet.centurylink.net", "JFK"), // Lumen
+            ("CS-YYZ3", "YYZ"),                          // CIRA Canadian Shield
+            ("dns4eu-ams-01", "AMS"),                    // DNS4EU
+            ("jp-kix-5", "KIX"),                         // DNS.SB
+        ] {
+            let site = parse_nsid(id).unwrap_or_else(|| panic!("{id} yielded no site"));
+            assert_eq!(site.code, code, "from {id}");
+            assert!(site.coords.is_some(), "{code} should be on the map");
+        }
+    }
+
+    /// NSID strings that name no place must stay silent rather than promote
+    /// a hostname fragment to a location.
+    #[test]
+    fn nsid_without_a_known_airport_is_none() {
+        for id in [
+            "pdns-recursor-58b7c5d77d-bjzkj", // FortiGuard
+            "tserv21",                        // Hurricane Electric
+            "230@dns9",                       // CZ.NIC ODVR
+            "ny2-hw-edge-gc7.fe.gc.onl",      // Gcore
+            "us-dns-rh1s",
+            "pad", // Telstra: not an airport we map
+            "",
+            "c0ffee", // a hex-encoded binary payload
+        ] {
+            assert!(parse_nsid(id).is_none(), "{id} should name no site");
         }
     }
 

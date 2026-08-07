@@ -430,13 +430,13 @@ fn poll_query(app: &mut App, tx: &mpsc::UnboundedSender<QueryOutcome>) {
     spawn_round(app, tx, round);
 }
 
-/// Ask each anycast resolver which of its sites is answering us (issue #6).
-/// One shot per run: the site follows our network path, not the query.
+/// Ask each resolver which of its sites is answering us (issues #6 and #36).
+/// One shot per run: the site follows our network path, not the query. Every
+/// resolver is asked — NSID needs no per-operator support, so even one the
+/// user added themselves can identify its node.
 fn spawn_site_probes(app: &App, site_tx: &mpsc::UnboundedSender<(IpAddr, sites::Site)>) {
     for resolver in &app.resolvers {
-        let Some(probe) = resolver.probe else {
-            continue;
-        };
+        let probe = resolver.probe;
         let site_tx = site_tx.clone();
         let server = resolver.ip;
         tokio::spawn(async move {
@@ -480,10 +480,8 @@ async fn run_once(domain: String, rtype: RecordType, ecs_list: Vec<ClientSubnet>
     // Site probes run concurrently with the first query round.
     let mut probes = tokio::task::JoinSet::new();
     for (index, resolver) in app.resolvers.iter().enumerate() {
-        if let Some(probe) = resolver.probe {
-            let server = resolver.ip;
-            probes.spawn(async move { (index, sites::discover(probe, server).await) });
-        }
+        let (probe, server) = (resolver.probe, resolver.ip);
+        probes.spawn(async move { (index, sites::discover(probe, server).await) });
     }
 
     let selections: Vec<Option<usize>> = if app.ecs_list.is_empty() {

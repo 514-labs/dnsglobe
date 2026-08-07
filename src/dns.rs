@@ -7,7 +7,7 @@ use hickory_resolver::config::{NameServerConfig, ResolveHosts, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::op::{Edns, Message, Query, ResponseCode};
-use hickory_resolver::proto::rr::rdata::opt::{EdnsCode, EdnsOption};
+use hickory_resolver::proto::rr::rdata::opt::{EdnsCode, EdnsOption, NSIDPayload};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, RecordType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -358,6 +358,55 @@ async fn exchange_tcp(server: IpAddr, request: &[u8], id: u16) -> Option<Message
     (response.metadata.id == id).then_some(response)
 }
 
+/// NSID request (RFC 5001): an EDNS option we send *empty* — that empty form
+/// is the request — which the server answers by echoing the option filled
+/// with its own identity string. It rides an ordinary query, so any server
+/// that implements it identifies itself without needing `id.server` support.
+///
+/// The carrier query is `. NS`: every recursive resolver has the root NS set
+/// cached, so it is the cheapest thing to ask, and it keeps the probe from
+/// leaking the domain the user is watching.
+fn nsid_message() -> Message {
+    let mut message = Message::query();
+    message.metadata.recursion_desired = true;
+    message.add_query(Query::query(Name::root(), RecordType::NS));
+    let mut edns = Edns::new();
+    edns.set_max_payload(EDNS_PAYLOAD);
+    edns.options_mut().insert(EdnsOption::NSID(
+        NSIDPayload::new(Vec::new()).expect("an empty NSID payload always fits"),
+    ));
+    message.edns = Some(edns);
+    message
+}
+
+/// RFC 5001 leaves the payload opaque, but operators put a printable ASCII
+/// host/site name in it. Anything else is hex-encoded (what `dig +nsid`
+/// shows) rather than dropped or mangled through lossy UTF-8, which could
+/// invent letters that never crossed the wire. An empty payload — some
+/// servers echo the option back unfilled — identifies nothing, so it is None.
+fn decode_nsid(payload: &[u8]) -> Option<String> {
+    let text = if payload.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        String::from_utf8(payload.to_vec()).ok()?.trim().to_string()
+    } else {
+        payload.iter().map(|b| format!("{b:02x}")).collect()
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// Ask a server to identify itself via NSID. None means it does not support
+/// the option (or did not answer) — the caller falls back to an `id.server`
+/// probe, and failing that the resolver keeps its configured location.
+pub async fn nsid(server: IpAddr) -> Option<String> {
+    let message = nsid_message();
+    let response = exchange(server, &message).await.ok()?;
+    match response.edns.as_ref()?.option(EdnsCode::NSID)? {
+        EdnsOption::NSID(payload) => decode_nsid(payload.as_ref()),
+        // A server that echoes code 3 with something hickory could not parse
+        // as an NSID payload is not identifying itself in any usable way.
+        _ => None,
+    }
+}
+
 /// IN TXT query returning each TXT character-string separately (a record's
 /// strings are answers like `"prefix code"` entries — joining them would
 /// destroy the structure). Used by the anycast site probes; None on any
@@ -561,6 +610,32 @@ mod tests {
             edns.option(EdnsCode::Subnet),
             Some(&EdnsOption::Subnet(subnet))
         );
+    }
+
+    #[test]
+    fn nsid_message_requests_an_empty_option() {
+        let message = nsid_message();
+        // RFC 5001 §2.1: the requester sends the option with zero-length data.
+        let edns = message.edns.as_ref().unwrap();
+        match edns.option(EdnsCode::NSID).unwrap() {
+            EdnsOption::NSID(payload) => assert!(payload.as_ref().is_empty()),
+            other => panic!("expected an NSID option, got {other:?}"),
+        }
+        let query = &message.queries[0];
+        assert!(query.name().is_root());
+        assert_eq!(query.query_type(), RecordType::NS);
+    }
+
+    #[test]
+    fn nsid_payloads_decode_as_ascii_or_hex() {
+        assert_eq!(decode_nsid(b"gpdns-yul").as_deref(), Some("gpdns-yul"));
+        // Trailing whitespace/NULs some servers pad with carry no meaning.
+        assert_eq!(decode_nsid(b"  yul01 ").as_deref(), Some("yul01"));
+        // Non-ASCII stays verifiable as hex instead of becoming U+FFFD.
+        assert_eq!(decode_nsid(&[0xc0, 0xff, 0xee]).as_deref(), Some("c0ffee"));
+        // An echoed-but-unfilled option identifies nothing.
+        assert_eq!(decode_nsid(b""), None);
+        assert_eq!(decode_nsid(b"   "), None);
     }
 
     /// A response as classify sees it: flip the id-generated query into a
