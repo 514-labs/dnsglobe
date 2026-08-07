@@ -30,6 +30,51 @@ impl Muted {
     }
 }
 
+/// A role that can carry a background as well as a foreground, written
+/// `"<fg> on <bg>"` in the config. Only `error` needs one today: a red
+/// foreground is exactly what washes out against a mid-toned terminal
+/// background, while white-on-red survives any theme (issue #33). The type is
+/// role-agnostic so another role can adopt it without new parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Paint {
+    pub fg: Color,
+    pub bg: Option<Color>,
+}
+
+impl Paint {
+    pub const fn color(fg: Color) -> Self {
+        Self { fg, bg: None }
+    }
+
+    pub const fn on(fg: Color, bg: Color) -> Self {
+        Self { fg, bg: Some(bg) }
+    }
+
+    /// Background included — for the badge-sized places where a filled block
+    /// reads as a marker: the row's status glyph and word.
+    pub fn style(self) -> Style {
+        let style = Style::new().fg(self.fg);
+        match self.bg {
+            Some(bg) => style.bg(bg),
+            None => style,
+        }
+    }
+
+    /// The role's own color. When it renders as a badge that's the
+    /// *background*: what a filled marker actually shows — "white" alone
+    /// would say nothing on a map dot.
+    pub fn hue(self) -> Color {
+        self.bg.unwrap_or(self.fg)
+    }
+
+    /// The hue as a plain foreground — for map dots, gauge fills, legend
+    /// swatches and prose, where a background would paint a garish block
+    /// behind a single glyph or drag a bar across a whole line.
+    pub fn tint(self) -> Style {
+        Style::new().fg(self.hue())
+    }
+}
+
 /// One color per UI meaning; every style in `ui.rs` draws from these, so a
 /// role recolors consistently everywhere it appears (table, map dot, legend).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +86,7 @@ pub struct Theme {
     /// Answers disagreeing with the majority.
     pub differ: Color,
     /// Query failures (ERR / SERVFAIL / NONE); doubles as slow latency.
-    pub error: Color,
+    pub error: Paint,
     /// Queries still in flight; doubles as middling latency.
     pub pending: Color,
     /// A cache serving an answer past its own TTL.
@@ -63,7 +108,10 @@ impl Default for Theme {
             accent: Color::LightCyan,
             agree: Color::LightGreen,
             differ: Color::LightMagenta,
-            error: Color::LightRed,
+            // White on bright red: the failure badge has to stay legible on
+            // any background, and a lone red foreground doesn't (issue #33).
+            // Only the badge takes the background — see `Paint::tint`.
+            error: Paint::on(Color::White, Color::LightRed),
             pending: Color::LightYellow,
             // Orange, to stay distinct from `error` red now that errors are
             // bright. Indexed: 8-color terminals will approximate it.
@@ -101,6 +149,16 @@ pub fn parse_color(s: &str) -> Result<Color> {
              a 256-color index like \"208\", or hex like \"#ff8700\")"
         )
     })
+}
+
+/// Parse a role that may name a background: `"white on red"`, or a single
+/// color for foreground-only. The separator is a spaced " on " so ratatui's
+/// two-word aliases still parse ("bright white on bright red").
+pub fn parse_paint(s: &str) -> Result<Paint> {
+    match s.split_once(" on ") {
+        Some((fg, bg)) => Ok(Paint::on(parse_color(fg.trim())?, parse_color(bg.trim())?)),
+        None => Ok(Paint::color(parse_color(s)?)),
+    }
 }
 
 /// The `muted` role additionally accepts "faint"/"dim" (the default).
@@ -142,6 +200,44 @@ mod tests {
             Muted::Color(Color::DarkGray)
         );
         assert!(parse_muted("blurple").is_err());
+    }
+
+    #[test]
+    fn paint_parses_with_or_without_a_background() {
+        assert_eq!(
+            parse_paint("lightred").unwrap(),
+            Paint::color(Color::LightRed)
+        );
+        assert_eq!(
+            parse_paint("white on bright red").unwrap(),
+            Paint::on(Color::White, Color::LightRed)
+        );
+        assert_eq!(
+            parse_paint("#ffffff on 196").unwrap(),
+            Paint::on(Color::Rgb(0xff, 0xff, 0xff), Color::Indexed(196))
+        );
+        // Both halves are validated, and the bad one is named.
+        assert!(
+            parse_paint("white on ocean")
+                .unwrap_err()
+                .to_string()
+                .contains("\"ocean\"")
+        );
+        assert!(parse_paint("ocean on red").is_err());
+    }
+
+    #[test]
+    fn badges_paint_a_background_but_tints_show_the_hue() {
+        let badge = Paint::on(Color::White, Color::LightRed);
+        assert_eq!(badge.style().fg, Some(Color::White));
+        assert_eq!(badge.style().bg, Some(Color::LightRed));
+        // A map dot or gauge fill wants the red, not the white text on it.
+        assert_eq!(badge.tint().fg, Some(Color::LightRed));
+        assert_eq!(badge.tint().bg, None);
+
+        let plain = Paint::color(Color::LightRed);
+        assert_eq!(plain.style().bg, None);
+        assert_eq!(plain.tint().fg, Some(Color::LightRed));
     }
 
     #[test]

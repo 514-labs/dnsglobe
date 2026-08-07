@@ -583,10 +583,11 @@ fn print_round(app: &App, summary: &app::Summary, multi: bool) {
                         } else {
                             "DIFFERS"
                         };
+                        // Right-aligned like the TUI's numeric columns, so a
+                        // column of TTLs reads at a glance (issue #33).
                         format!(
-                            "{status} {:>5}ms  ttl={:<7} {}",
+                            "{status} {:>5}ms  ttl={min_ttl:>6}  {}",
                             elapsed.as_millis(),
-                            min_ttl,
                             values.join(", ")
                         )
                     }
@@ -613,8 +614,9 @@ fn print_round(app: &App, summary: &app::Summary, multi: bool) {
             Some(site) => format!("→{}", site.code),
             None => resolver.location.clone(),
         };
+        // Same fixed widths the TUI table uses, so the two views line up.
         println!(
-            "{:<22} {:<8} {:<16} {line}",
+            "{:<20} {:<8} {:<15} {line}",
             resolver.name, location, resolver.ip
         );
     }

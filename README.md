@@ -27,6 +27,12 @@ consistent answer, not twenty conflicting ones. The propagation gauge shows
 how many resolvers are in the majority group; outliers are flagged
 `≠ DIFFERS` once all results are in.
 
+The table fits an 80-column terminal: every resolver's full IPv4 address,
+round-trip time, TTL and expiry countdown stay intact, and the per-row
+verdict shrinks to the glyph in the left margin (`✓ ≠ ! ↻ ∅ ✗`) so the answer
+keeps the space. The countdown is coarse on purpose — `45s`, `4m`, `2h`, `1d`
+— since a column of seconds ticking out of unison is noise above a minute.
+
 When the terminal is wide enough, a view of the world appears on the right
 with one dot per resolver, colored by status (green agrees, magenta differs,
 red error, yellow in flight). The view adapts to the width: terminals ≥157
@@ -141,7 +147,11 @@ ip = "198.51.100.53"
 accent   = "lightcyan"    # borders, titles, cursor, anycast sites
 agree    = "lightgreen"   # answers matching the majority; fast latency
 differ   = "lightmagenta" # answers disagreeing with the majority
-error    = "lightred"     # ERR / SERVFAIL / NONE; slow latency
+error    = "white on lightred"
+                          # ERR / SERVFAIL / NONE; slow latency. Written
+                          # "<fg> on <bg>", it becomes a filled badge on the
+                          # status glyph and word — legible on any background;
+                          # a plain color like "lightred" drops the badge
 pending  = "lightyellow"  # queries in flight; middling latency
 stale    = "208"          # caches serving an answer past its own TTL
 upstream = "lightblue"    # refetched but upstream still has the old data
