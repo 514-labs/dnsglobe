@@ -643,11 +643,27 @@ fn print_round(app: &App, summary: &app::Summary, multi: bool) {
         && summary.responding > 0
         && summary.agree == summary.responding
         && let Some(est) = app.estimated_ttl(summary)
-        && est >= app::ADVISORY_TTL
     {
-        println!(
-            "note: TTL ≈ {} — planning a record change? lower the TTL first, then wait one old-TTL period before switching.",
-            app::fmt_secs(u64::from(est))
-        );
+        if est.ttl >= app::ADVISORY_TTL {
+            println!(
+                "note: TTL ≈ {} — planning a record change? lower the TTL first, then wait one old-TTL period before switching.",
+                app::fmt_secs(u64::from(est.ttl))
+            );
+        }
+        // A resolver reporting far more than the fleet isn't counted in the
+        // estimate above, but it's worth naming: that cache serves the old
+        // answer for as long as it claims, whatever the zone says.
+        for outlier in &est.outliers {
+            let resolver = &app.resolvers[outlier.index];
+            println!(
+                "note: {} ({}) reports ttl={} where {} of {} resolvers report ttl<={} — that cache will serve the old answer long past the zone's TTL.",
+                resolver.name,
+                resolver.location,
+                outlier.ttl,
+                est.samples - est.outliers.len(),
+                est.samples,
+                est.ttl,
+            );
+        }
     }
 }

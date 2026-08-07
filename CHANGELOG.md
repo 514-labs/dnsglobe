@@ -24,6 +24,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   TUI — instead of filling the table with one identical error per resolver,
   which read like a network outage.
   ([#37](https://github.com/514-labs/dnsglobe/pull/37))
+- The TTL note no longer lets a single resolver speak for the zone. It used to
+  report the longest TTL any agreeing resolver returned, so one resolver
+  handing back an invented 8423s turned a 300s zone into "TTL ≈ 2h23m" and
+  advised lowering a TTL that was already low. The estimate now ignores
+  reports wildly out of line with the rest of the fleet (never more than a
+  tenth of it), and any resolver that reported one is named on the note line
+  with what it claims — that cache really will serve the old answer after a
+  change, and it is worth knowing which one it is.
+  ([#38](https://github.com/514-labs/dnsglobe/pull/38))
 
 ## [0.4.0] - 2026-07-11
 

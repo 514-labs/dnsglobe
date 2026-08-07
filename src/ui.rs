@@ -27,13 +27,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // flagging outliers mid-flight makes rows flap as the majority shifts.
     let complete = summary.done > 0 && !app.in_flight();
 
-    let advisory = ttl_advisory(app, &summary, complete);
+    let note = ttl_note(app, &summary, complete);
     // The header grows one row for the ECS line, only when --ecs/config set
     // subnets up — an ECS-less run renders exactly as before.
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(if app.ecs_list.is_empty() { 4 } else { 5 }),
         Constraint::Min(6),
-        Constraint::Length(if advisory.is_some() { 3 } else { 2 }),
+        Constraint::Length(if note.is_some() { 3 } else { 2 }),
     ])
     .areas(frame.area());
 
@@ -75,7 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_map(frame, app, &summary, complete, &geom, map_area);
         draw_map_info(frame, app, &summary, complete, info_area);
     }
-    draw_footer(frame, app, &summary, advisory, footer);
+    draw_footer(frame, app, &summary, note, footer);
     if let Some(form) = &app.form {
         draw_resolver_form(frame, form, frame.area());
     }
@@ -99,20 +99,48 @@ fn info_rows(app: &App, summary: &Summary, complete: bool) -> u16 {
     }
 }
 
-/// One-line "lower your TTL before migrating" hint, shown once a round has
-/// settled with full agreement (the planning phase — mid-migration the advice
-/// comes too late) and the zone's TTL is long.
-fn ttl_advisory(app: &App, summary: &Summary, complete: bool) -> Option<String> {
+/// One-line TTL note, shown once a round has settled with full agreement (the
+/// planning phase — mid-migration the advice comes too late). It carries the
+/// "lower your TTL before migrating" hint when the zone's TTL is long, and
+/// names any resolver holding a far longer lease than the rest: with every
+/// resolver agreeing, that cache is the one thing left that can still serve
+/// the old answer after a change.
+fn ttl_note(app: &App, summary: &Summary, complete: bool) -> Option<String> {
     if !complete || summary.responding == 0 || summary.agree != summary.responding {
         return None;
     }
     let est = app.estimated_ttl(summary)?;
-    (est >= ADVISORY_TTL).then(|| {
-        format!(
+    let mut note = String::new();
+    if est.ttl >= ADVISORY_TTL {
+        note.push_str(&format!(
             "TTL ≈ {} — planning a record change? Lower the TTL first, then wait one old-TTL period before switching.",
-            fmt_secs(u64::from(est))
-        )
-    })
+            fmt_secs(u64::from(est.ttl))
+        ));
+    }
+    if let Some(worst) = est.outliers.first() {
+        if !note.is_empty() {
+            note.push_str(" · ");
+        } else {
+            note.push_str(&format!(
+                "TTL ≈ {} ({}/{} resolvers) · ",
+                fmt_secs(u64::from(est.ttl)),
+                est.samples - est.outliers.len(),
+                est.samples
+            ));
+        }
+        let resolver = &app.resolvers[worst.index];
+        note.push_str(&format!(
+            "{} ({}) reports {}{} — that cache will serve the old answer long past the zone's TTL.",
+            resolver.name,
+            resolver.location,
+            fmt_secs(u64::from(worst.ttl)),
+            match est.outliers.len() {
+                1 => String::new(),
+                n => format!(" (+{} more)", n - 1),
+            }
+        ));
+    }
+    (!note.is_empty()).then_some(note)
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -662,13 +690,7 @@ fn draw_map_info(frame: &mut Frame, app: &App, summary: &Summary, complete: bool
     );
 }
 
-fn draw_footer(
-    frame: &mut Frame,
-    app: &App,
-    summary: &Summary,
-    advisory: Option<String>,
-    area: Rect,
-) {
+fn draw_footer(frame: &mut Frame, app: &App, summary: &Summary, note: Option<String>, area: Rect) {
     let th = theme::active();
     let mut status = Line::default();
     if let Some((domain, rtype, ecs)) = &app.queried {
@@ -729,18 +751,18 @@ fn draw_footer(
         ),
         th.muted.style(),
     ));
-    if let Some(advisory) = advisory {
-        let advisory_line = Line::from(vec![
+    if let Some(note) = note {
+        let note_line = Line::from(vec![
             Span::styled(" ℹ ", Style::new().fg(th.accent)),
-            Span::styled(advisory, th.muted.style().italic()),
+            Span::styled(note, th.muted.style().italic()),
         ]);
-        let [advisory_area, status_area, keys_area] = Layout::vertical([
+        let [note_area, status_area, keys_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new(advisory_line), advisory_area);
+        frame.render_widget(Paragraph::new(note_line), note_area);
         frame.render_widget(Paragraph::new(status), status_area);
         frame.render_widget(Paragraph::new(keys), keys_area);
     } else {
@@ -835,5 +857,46 @@ mod tests {
         // …capped so a many-valued record doesn't crush the globe.
         summary.majority_values = vec!["v".into(); 30];
         assert_eq!(info_rows(&app, &summary, true), 26);
+    }
+
+    /// Every resolver agreeing on one answer, each with its own reported TTL.
+    fn settled_app(ttls: &[u32]) -> App {
+        let mut app = App::new("example.com".into());
+        app.rows = ttls
+            .iter()
+            .map(|&min_ttl| RowState::Done {
+                result: QueryResult::Records {
+                    values: vec!["192.0.2.1".into()],
+                    min_ttl,
+                },
+                elapsed: std::time::Duration::from_millis(10),
+                at: Instant::now(),
+                ecs_honored: None,
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn ttl_note_attributes_an_outlier_rather_than_headlining_it() {
+        let n = App::new(String::new()).resolvers.len();
+        let mut ttls = vec![300u32; n - 1];
+        ttls.push(8423);
+        let app = settled_app(&ttls);
+        let note = ttl_note(&app, &app.summary(), true).unwrap();
+        // The zone's TTL leads; the lone long report is named, not obeyed.
+        assert!(note.starts_with("TTL ≈ 5m00s"), "{note}");
+        assert!(note.contains(&app.resolvers[n - 1].name), "{note}");
+        assert!(note.contains("2h20m"), "{note}");
+        assert!(!note.contains("Lower the TTL first"), "{note}");
+
+        // Nothing to say about a short TTL the whole fleet agrees on.
+        let app = settled_app(&vec![300u32; n]);
+        assert_eq!(ttl_note(&app, &app.summary(), true), None);
+
+        // A genuinely long TTL still gets the planning advice.
+        let app = settled_app(&vec![86_400u32; n]);
+        let note = ttl_note(&app, &app.summary(), true).unwrap();
+        assert!(note.starts_with("TTL ≈ 1d0h — planning"), "{note}");
     }
 }
