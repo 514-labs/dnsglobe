@@ -25,6 +25,12 @@ const HISTORY_CAP: usize = 32;
 /// record change (the "drop TTL to 30s a day before migrating" practice).
 pub const ADVISORY_TTL: u32 = 3600;
 
+/// How far above the fleet's 90th percentile a reported TTL has to sit before
+/// it stops counting as the same record's countdown. Honest countdowns for one
+/// record all live in `(0, configured_ttl]`, so a 4× gap can't come from
+/// caching timing — it's a resolver reporting a number of its own invention.
+const TTL_OUTLIER_FACTOR: u32 = 4;
+
 pub const RECORD_TYPES: &[RecordType] = &[
     RecordType::A,
     RecordType::AAAA,
@@ -129,6 +135,31 @@ struct Observation {
     values: Vec<String>,
     min_ttl: u32,
     at: Instant,
+}
+
+/// One resolver's reported TTL, attributable back to that resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TtlReport {
+    /// Index into `App::resolvers`, so callers can name the resolver.
+    pub index: usize,
+    /// The TTL it reported, in seconds.
+    pub ttl: u32,
+}
+
+/// What the fleet's reported TTLs say about the zone's configured TTL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TtlEstimate {
+    /// Best estimate of the zone's configured TTL, in seconds: the longest
+    /// countdown reported by a resolver whose number the rest of the fleet
+    /// corroborates.
+    pub ttl: u32,
+    /// How many majority rows reported a TTL at all (`ttl` plus `outliers`
+    /// were drawn from these).
+    pub samples: usize,
+    /// Reports too far above the fleet to be this record's countdown, longest
+    /// first. Not an error to surface and forget: such a cache keeps serving
+    /// the old answer well past the zone's stated lifetime.
+    pub outliers: Vec<TtlReport>,
 }
 
 /// Why a resolver is still serving a non-majority answer.
@@ -835,22 +866,69 @@ impl App {
         (now > deadline).then_some(TtlVerdict::PastTtl)
     }
 
-    /// Estimated configured TTL: the max reported TTL across majority rows.
-    /// A resolver that just refetched reports (nearly) the full configured
-    /// value, so the max over the fleet is within seconds of the zone's TTL.
-    pub fn estimated_ttl(&self, summary: &Summary) -> Option<u32> {
-        self.rows
+    /// Estimate the zone's configured TTL from what the majority rows report.
+    ///
+    /// A reported TTL is a *countdown*, not the configured value: a resolver
+    /// that just refetched reports (nearly) the full TTL, one halfway through
+    /// its cache entry reports half of it. So the longest report is the best
+    /// estimate — but only among resolvers reporting this record's countdown.
+    /// Some public resolvers hand back numbers unrelated to the authoritative
+    /// record (fixed floors, or values of their own invention), and taking a
+    /// plain max let one of them speak for the zone: a single resolver
+    /// reporting 8423s turned a 300s zone into "TTL ≈ 2h23m".
+    ///
+    /// So the max is taken over reports within `TTL_OUTLIER_FACTOR` of the
+    /// fleet's 90th percentile, and anything above that is returned separately
+    /// for the caller to attribute. Skipping a tenth of the fleet is what
+    /// bounds the damage: a handful of liars can't move the percentile, and by
+    /// construction no more than a tenth of the reports can be rejected. A
+    /// fleet where *most* resolvers fabricate the same long TTL is beyond what
+    /// resolver-side data can settle — dnsglobe never talks to the
+    /// authoritative servers, so there is no ground truth to fall back on.
+    pub fn estimated_ttl(&self, summary: &Summary) -> Option<TtlEstimate> {
+        let mut reports: Vec<TtlReport> = self
+            .rows
             .iter()
             .enumerate()
             .filter(|&(i, _)| summary.majority_rows[i])
-            .filter_map(|(_, row)| match row {
+            .filter_map(|(index, row)| match row {
                 RowState::Done {
                     result: QueryResult::Records { min_ttl, .. },
                     ..
-                } => Some(*min_ttl),
+                } => Some(TtlReport {
+                    index,
+                    ttl: *min_ttl,
+                }),
                 _ => None,
             })
-            .max()
+            .collect();
+        let samples = reports.len();
+        if samples == 0 {
+            return None;
+        }
+
+        reports.sort_unstable_by_key(|r| std::cmp::Reverse(r.ttl));
+        // Longest report left after skipping the top tenth. Under ten samples
+        // that tenth is empty and this is just the max, which is what we want:
+        // a percentile over a handful of resolvers is too thin to convict any
+        // of them of lying.
+        let bulk = reports[samples / 10].ttl;
+        let cutoff = bulk.saturating_mul(TTL_OUTLIER_FACTOR);
+        // A zero cutoff means most of the fleet is at the end of its countdown
+        // (or reports no TTL at all); every other report would then look like
+        // an outlier, so fall back to the plain max.
+        let outliers = if cutoff == 0 {
+            0
+        } else {
+            reports.iter().take_while(|r| r.ttl > cutoff).count()
+        };
+        Some(TtlEstimate {
+            // `bulk` is never above the cutoff, so a non-outlier always
+            // remains to speak for the zone.
+            ttl: reports[outliers].ttl,
+            samples,
+            outliers: reports[..outliers].to_vec(),
+        })
     }
 
     /// Worst-case wait until every non-majority cache must have refetched:
@@ -1437,11 +1515,15 @@ mod tests {
         assert_eq!(round.indices, vec![0, 2, 3]);
     }
 
-    #[test]
-    fn estimated_ttl_is_max_over_majority_rows_only() {
-        let mut app = app_with_answers(&[&["x"], &["x"], &["y"]]);
-        let ttls = [300u32, 3600, 999_999];
-        for (row, ttl) in app.rows.iter_mut().zip(ttls) {
+    /// One agreeing row per TTL, so every row lands in the majority.
+    fn app_agreeing_with_ttls(ttls: &[u32]) -> App {
+        let mut app = app_with_answers(&vec![&["x"] as &[&str]; ttls.len()]);
+        set_ttls(&mut app, ttls);
+        app
+    }
+
+    fn set_ttls(app: &mut App, ttls: &[u32]) {
+        for (row, &ttl) in app.rows.iter_mut().zip(ttls) {
             if let RowState::Done {
                 result: QueryResult::Records { min_ttl, .. },
                 ..
@@ -1450,9 +1532,111 @@ mod tests {
                 *min_ttl = ttl;
             }
         }
+    }
+
+    #[test]
+    fn estimated_ttl_is_max_over_majority_rows_only() {
+        let mut app = app_with_answers(&[&["x"], &["x"], &["y"]]);
+        set_ttls(&mut app, &[300, 3600, 999_999]);
         let summary = app.summary();
-        // The differing row's huge TTL must not leak into the estimate.
-        assert_eq!(app.estimated_ttl(&summary), Some(3600));
+        let est = app.estimated_ttl(&summary).unwrap();
+        // The differing row's huge TTL must not leak into the estimate, and
+        // under ten samples the longest agreeing report stands unchallenged.
+        assert_eq!(est.ttl, 3600);
+        assert_eq!(est.samples, 2);
+        assert!(est.outliers.is_empty());
+    }
+
+    #[test]
+    fn one_fabricated_ttl_does_not_set_the_estimate() {
+        // The reported case: 32 resolvers on a 300s zone, plus one reporting
+        // 8423s. The headline must stay with the zone, well under the
+        // advisory threshold, and the liar must be named instead.
+        let mut ttls = vec![124u32; 16];
+        ttls.extend([300u32; 15]);
+        ttls.push(430);
+        ttls.push(8423);
+        let app = app_agreeing_with_ttls(&ttls);
+        let summary = app.summary();
+        let est = app.estimated_ttl(&summary).unwrap();
+        assert_eq!(est.ttl, 430);
+        assert!(est.ttl < ADVISORY_TTL);
+        assert_eq!(est.samples, 33);
+        assert_eq!(
+            est.outliers,
+            vec![TtlReport {
+                index: 32,
+                ttl: 8423
+            }]
+        );
+    }
+
+    #[test]
+    fn a_genuinely_long_ttl_still_triggers_the_advisory() {
+        // A 1-day zone sampled mid-countdown: every report is a fraction of
+        // 86400, and the freshest ones sit at the full value. Nothing here is
+        // an outlier, and the estimate must clear ADVISORY_TTL.
+        let mut ttls: Vec<u32> = (0..32).map(|i| 86_400 - i * 2_500).collect();
+        ttls.push(86_400);
+        let app = app_agreeing_with_ttls(&ttls);
+        let summary = app.summary();
+        let est = app.estimated_ttl(&summary).unwrap();
+        assert_eq!(est.ttl, 86_400);
+        assert!(est.ttl >= ADVISORY_TTL);
+        assert!(est.outliers.is_empty());
+    }
+
+    #[test]
+    fn outlier_rejection_is_capped_at_a_tenth_of_the_fleet() {
+        // Five resolvers agreeing on a long TTL out of twenty are a fifth of
+        // the fleet: too many to dismiss as fabrications, so they set the
+        // estimate rather than being explained away.
+        let mut ttls = vec![300u32; 15];
+        ttls.extend([86_400u32; 5]);
+        let app = app_agreeing_with_ttls(&ttls);
+        let summary = app.summary();
+        let est = app.estimated_ttl(&summary).unwrap();
+        assert_eq!(est.ttl, 86_400);
+        assert!(est.outliers.is_empty());
+    }
+
+    #[test]
+    fn estimated_ttl_needs_a_majority_row_with_records() {
+        // Nothing queried yet.
+        let app = App::new("example.com".into());
+        assert_eq!(app.estimated_ttl(&app.summary()), None);
+
+        // Answered, but nothing that carries a TTL: no majority, no estimate.
+        let mut app = App::new("example.com".into());
+        app.rows = vec![
+            RowState::Done {
+                result: QueryResult::Error("timeout".into()),
+                elapsed: Duration::from_secs(3),
+                at: Instant::now(),
+                ecs_honored: None,
+            },
+            RowState::Done {
+                result: QueryResult::ServFail,
+                elapsed: Duration::from_millis(10),
+                at: Instant::now(),
+                ecs_honored: None,
+            },
+        ];
+        assert_eq!(app.estimated_ttl(&app.summary()), None);
+    }
+
+    #[test]
+    fn a_fleet_at_the_end_of_its_countdown_falls_back_to_the_max() {
+        // Reported TTLs are countdowns, so a fleet polled just before expiry
+        // reports zeros. Zero times anything is zero: without a fallback every
+        // non-zero report would look like an outlier.
+        let mut ttls = vec![0u32; 32];
+        ttls.push(300);
+        let app = app_agreeing_with_ttls(&ttls);
+        let summary = app.summary();
+        let est = app.estimated_ttl(&summary).unwrap();
+        assert_eq!(est.ttl, 300);
+        assert!(est.outliers.is_empty());
     }
 
     #[test]
