@@ -35,13 +35,17 @@ globe, which needs fewer columns; resizing across the threshold morphs one
 into the other. Ctrl+O toggles map/globe by hand, and `--view auto|map|globe`
 (or `view = "..."` in the config file) forces a style outright.
 
-Anycast networks are asked which of their sites is answering you: Quad9
-(`TXT id.server.on.quad9.net`), Cloudflare (`CH TXT id.server`), Google
-(egress subnet via `TXT o-o.myaddr.l.google.com` matched against
-`TXT locations.publicdns.goog`), OpenDNS (`TXT debug.opendns.com`),
-CleanBrowsing, and Neustar UltraDNS. The discovered site shows in the Loc
-column as `→YUL`-style codes, and the resolver's map dot moves to the POP
-actually serving your queries.
+Every resolver is asked which of its sites is answering you, via NSID
+(RFC 5001) — an EDNS option the answering node fills with its own name
+(`gpdns-yul`, `yul01`, `res721.qyul1`, `jfk-dns1-02.inet.centurylink.net`).
+It needs no per-operator support, so resolvers you add yourself can report a
+site too. Where NSID names no place, the operator-specific identification
+queries take over: Quad9 (`TXT id.server.on.quad9.net`), Cloudflare
+(`CH TXT id.server`), Google (egress subnet via
+`TXT o-o.myaddr.l.google.com` matched against `TXT locations.publicdns.goog`),
+OpenDNS (`TXT debug.opendns.com`), CleanBrowsing, and Neustar UltraDNS. The
+discovered site shows in the Loc column as `→YUL`-style codes, and the
+resolver's map dot moves to the POP actually serving your queries.
 
 ## Usage
 
@@ -155,9 +159,9 @@ startup with the offending entry named.
 ## Notes
 
 - Several resolvers are anycast networks, so the responding node is the one
-  nearest to you. Networks with an identification query report the actual
-  answering site (`→YUL`); for the rest the location column is the
-  operator's home region.
+  nearest to you. Networks that identify their node — via NSID or an
+  identification query — report the actual answering site (`→YUL`); for the
+  rest the location column is the operator's home region.
 - The built-in resolver list lives in `src/resolvers.rs`; use the config file
   above to extend or replace it without rebuilding. Every built-in entry was
   verified to answer external queries; many well-known ISP resolvers (and,
