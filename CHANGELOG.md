@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-07
+
 ### Changed
 
 - The resolver table now fits an 80-column terminal without cropping
