@@ -32,7 +32,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tenth of it), and any resolver that reported one is named on the note line
   with what it claims — that cache really will serve the old answer after a
   change, and it is worth knowing which one it is.
-  ([#XX](https://github.com/514-labs/dnsglobe/pull/XX))
+  ([#38](https://github.com/514-labs/dnsglobe/pull/38))
 
 ## [0.4.0] - 2026-07-11
 
