@@ -63,6 +63,7 @@ cargo install dnsglobe               # from crates.io
 yay -S dnsglobe                      # from archlinux aur (compile from source)
 yay -S dnsglobe-bin                  # from archlinux aur (install prebuilt binary)
 nix run github:514-labs/dnsglobe     # Nix flakes (builds from source)
+x eget use 514-labs/dnsglobe         # from (from its GitHub release)
 # or grab a prebuilt binary from the GitHub Releases page
 ```
 
