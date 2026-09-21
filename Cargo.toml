@@ -2,7 +2,7 @@
 name = "dnsglobe"
 version = "0.5.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Global DNS propagation checker TUI — watch a DNS record propagate across 34 public resolvers worldwide, on a world map in your terminal"
 keywords = ["dns", "propagation", "tui", "terminal", "networking"]
 categories = ["command-line-utilities", "network-programming"]

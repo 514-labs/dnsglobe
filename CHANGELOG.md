@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Dockerfile` and `compose.yaml` for running dnsglobe without a local Rust
+  toolchain. Works with Docker Compose and Podman Compose. Usage:
+  `docker compose run --rm dnsglobe example.com` (or `podman compose run …`).
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed
