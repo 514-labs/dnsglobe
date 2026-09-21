@@ -1,0 +1,6 @@
+target/
+result
+result-*
+.git/
+demo/
+*.md

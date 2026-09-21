@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Dockerfile` and `docker-compose.yaml` for running dnsglobe without a local
+  Rust toolchain. Works with Docker Compose and Podman Compose.
+  TUI: `docker compose run --rm dnsglobe example.com`
+  Web UI: `docker compose up dnsglobe-web` then open `http://localhost:8080`
+- `dnsglobe-web` binary: Axum 0.8 WebSocket server that streams DNS propagation
+  results to a browser UI with a live resolver table and a rotating D3
+  orthographic globe. Query any domain and record type; all 34 resolvers query
+  in parallel and results stream in as they arrive. No installation required:
+  `docker compose up dnsglobe-web`.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Globe</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --ok: #3fb950;
+    --differs: #d2a8ff;
+    --error: #f85149;
+    --pending: #d29922;
+    --accent: #58a6ff;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  .controls {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  input[type="text"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font: inherit;
+    flex: 1;
+    min-width: 160px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+
+  select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font: inherit;
+    outline: none;
+    cursor: pointer;
+  }
+
+  button {
+    background: var(--accent);
+    border: none;
+    color: #0d1117;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .progress-wrap {
+    padding: 0 24px;
+    height: 3px;
+    background: var(--surface);
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s;
+  }
+
+  .status-line {
+    padding: 6px 24px;
+    color: var(--muted);
+    font-size: 12px;
+    min-height: 24px;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .table-panel {
+    flex: 1;
+    overflow-y: auto;
+    min-width: 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+  tbody tr:hover { background: var(--surface); }
+
+  td {
+    padding: 7px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 260px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .s-ok      { color: var(--ok);      background: #1a3a22; }
+  .s-differs { color: var(--differs); background: #2d1f45; }
+  .s-error,
+  .s-servfail { color: var(--error);  background: #3d1218; }
+  .s-nxdomain { color: var(--muted);  background: #1c2028; }
+  .s-pending  { color: var(--pending); background: #2d2208; }
+
+  .ping { color: var(--muted); }
+  .ping.fast { color: var(--ok); }
+  .ping.slow { color: var(--error); }
+
+  .globe-panel {
+    width: 380px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .globe-panel svg {
+    width: 100%;
+    height: auto;
+  }
+
+  .globe-label {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  footer {
+    padding: 8px 24px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    display: flex;
+    gap: 12px;
+  }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+
+  @media (max-width: 900px) {
+    .globe-panel { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#127757; DNS Globe</h1>
+  <div class="controls">
+    <input type="text" id="domain" placeholder="example.com" value="">
+    <select id="rtype">
+      <option>A</option>
+      <option>AAAA</option>
+      <option>CNAME</option>
+      <option>MX</option>
+      <option>NS</option>
+      <option>TXT</option>
+      <option>SOA</option>
+    </select>
+    <button id="check-btn" onclick="startCheck()">Check</button>
+  </div>
+</header>
+
+<div class="progress-wrap"><div class="progress-bar" id="progress"></div></div>
+<div class="status-line" id="status-line">Enter a domain and click Check.</div>
+
+<main>
+  <div class="table-panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Resolver</th>
+          <th>Loc</th>
+          <th>IP</th>
+          <th>Ping</th>
+          <th>Status</th>
+          <th>Answer</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="globe-panel">
+    <svg id="globe-svg" viewBox="0 0 340 340"></svg>
+    <div class="globe-label">Resolver globe &mdash; dots colored by status</div>
+  </div>
+</main>
+
+<footer>
+  <span>dnsglobe v{{VERSION}}</span>
+  <span>&middot;</span>
+  <a href="https://github.com/514-labs/dnsglobe" target="_blank" rel="noopener">github.com/514-labs/dnsglobe</a>
+</footer>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let resolverMap = {};   // index → row data
+let ws = null;
+let animFrame = null;
+let rotation = 0;
+let total = 0;
+let done = 0;
+let worldData = null;
+
+// ── Globe setup ────────────────────────────────────────────────────────────
+const svgEl = document.getElementById('globe-svg');
+const W = 340, H = 340, R = 155;
+const projection = d3.geoOrthographic()
+  .scale(R)
+  .translate([W / 2, H / 2])
+  .clipAngle(90);
+const path = d3.geoPath().projection(projection);
+const svg = d3.select('#globe-svg');
+
+// Sphere fill
+svg.append('circle')
+  .attr('cx', W / 2).attr('cy', H / 2).attr('r', R)
+  .attr('fill', '#1a2030');
+
+const landGroup = svg.append('g').attr('class', 'land');
+const dotGroup  = svg.append('g').attr('class', 'dots');
+
+// Limb ring
+svg.append('circle')
+  .attr('cx', W / 2).attr('cy', H / 2).attr('r', R)
+  .attr('fill', 'none').attr('stroke', '#30363d').attr('stroke-width', 1);
+
+// Load world topojson — topojson-client is already in <head> so topojson is defined
+let landFeatures = null;
+
+fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+  .then(r => r.json())
+  .then(data => {
+    worldData = data;
+    landFeatures = topojson.feature(data, data.objects.countries).features;
+    landGroup.selectAll('path')
+      .data(landFeatures)
+      .join('path')
+      .attr('fill', '#2a3a50')
+      .attr('stroke', '#3a4a60')
+      .attr('stroke-width', 0.4);
+    animate();
+  })
+  .catch(() => {
+    animate();
+  });
+
+function statusColor(status) {
+  switch (status) {
+    case 'ok':       return '#3fb950';
+    case 'differs':  return '#d2a8ff';
+    case 'error':
+    case 'servfail': return '#f85149';
+    case 'nxdomain': return '#8b949e';
+    default:         return '#d29922'; // pending
+  }
+}
+
+function redrawDots() {
+  const dots = Object.values(resolverMap).filter(r => r.lat != null && r.lon != null);
+  const sel = dotGroup.selectAll('circle').data(dots, d => d.index);
+  sel.join(
+    enter => enter.append('circle').attr('r', 4).attr('opacity', 0.85),
+    update => update,
+    exit => exit.remove()
+  )
+  .attr('fill', d => statusColor(d.status))
+  .attr('stroke', '#0d1117')
+  .attr('stroke-width', 1)
+  .attr('transform', d => {
+    const proj = projection([d.lon, d.lat]);
+    return proj ? `translate(${proj[0]},${proj[1]})` : 'translate(-999,-999)';
+  });
+}
+
+function redrawLand() {
+  if (!landFeatures) return;
+  landGroup.selectAll('path').attr('d', path);
+}
+
+function animate() {
+  rotation += 0.2;
+  projection.rotate([rotation, -20]);
+  redrawLand();
+  redrawDots();
+  animFrame = requestAnimationFrame(animate);
+}
+
+// ── Table ──────────────────────────────────────────────────────────────────
+function pingClass(ms) {
+  if (ms == null) return 'ping';
+  if (ms < 80) return 'ping fast';
+  if (ms > 300) return 'ping slow';
+  return 'ping';
+}
+
+function renderRow(r) {
+  const tr = document.getElementById('row-' + r.index) || (() => {
+    const el = document.createElement('tr');
+    el.id = 'row-' + r.index;
+    document.getElementById('tbody').appendChild(el);
+    return el;
+  })();
+
+  const pingStr = r.ping_ms != null ? r.ping_ms + 'ms' : '…';
+  const answerStr = (r.answer || []).join(', ') || '—';
+  const ttlStr = r.ttl != null ? ` ttl=${r.ttl}` : '';
+
+  tr.innerHTML = `
+    <td title="${r.resolver}">${r.resolver}</td>
+    <td>${r.location}</td>
+    <td>${r.ip}</td>
+    <td class="${pingClass(r.ping_ms)}">${pingStr}</td>
+    <td><span class="status-badge s-${r.status}">${r.status.toUpperCase()}</span></td>
+    <td title="${answerStr}${ttlStr}">${answerStr}</td>
+  `;
+}
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+function startCheck() {
+  const domain = document.getElementById('domain').value.trim();
+  if (!domain) { alert('Enter a domain first.'); return; }
+  const rtype  = document.getElementById('rtype').value;
+
+  if (ws) { ws.close(); ws = null; }
+
+  // Reset state
+  resolverMap = {};
+  done = 0;
+  total = 0;
+  document.getElementById('tbody').innerHTML = '';
+  document.getElementById('progress').style.width = '0%';
+  document.getElementById('status-line').textContent = `Querying ${domain} ${rtype}…`;
+  document.getElementById('check-btn').disabled = true;
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws?domain=${encodeURIComponent(domain)}&type=${rtype}`);
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.done) {
+      document.getElementById('status-line').textContent =
+        `Done — ${total} resolvers queried for ${domain} ${rtype}`;
+      document.getElementById('check-btn').disabled = false;
+      document.getElementById('progress').style.width = '100%';
+      ws.close();
+      return;
+    }
+
+    if (msg.error) {
+      document.getElementById('status-line').textContent = 'Error: ' + msg.error;
+      document.getElementById('check-btn').disabled = false;
+      return;
+    }
+
+    // Initial pending rows set total
+    if (msg.total > 0) total = msg.total;
+
+    resolverMap[msg.index] = msg;
+    renderRow(msg);
+
+    if (msg.status !== 'pending') {
+      done++;
+      const pct = total > 0 ? (done / total * 100).toFixed(0) : 0;
+      document.getElementById('progress').style.width = pct + '%';
+      document.getElementById('status-line').textContent =
+        `${done}/${total} resolvers responded — ${domain} ${rtype}`;
+    }
+  };
+
+  ws.onerror = () => {
+    document.getElementById('status-line').textContent = 'WebSocket error.';
+    document.getElementById('check-btn').disabled = false;
+  };
+
+  ws.onclose = () => {
+    document.getElementById('check-btn').disabled = false;
+  };
+}
+
+// Allow Enter key in domain field
+document.getElementById('domain').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startCheck();
+});
+</script>
+</body>
+</html>
