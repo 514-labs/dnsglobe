@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     resolvers::init(settings.resolvers);
     theme::init(settings.theme);
 
-// A name that can't go on the wire is a user error, so say so once here —
+    // A name that can't go on the wire is a user error, so say so once here —
     // before the terminal enters raw mode — instead of letting every resolver
     // report the same parse failure and look like a network outage.
     let domain = cli

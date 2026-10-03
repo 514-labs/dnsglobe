@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-03
+
+### Added
+
+- Synced with upstream 0.5.0: anycast site discovery via NSID (RFC 5001)
+  with `id.server` fallback, 80-column-safe table layout with status
+  glyphs and error badges, coarse expiry countdown, and the `--output
+  json|csv` format flag now composes with `--ecs` cycles.
+  ([#3](https://github.com/besmirzanaj/dnsglobe/pull/3))
+
+### Fixed
+
+- Names with a mid-label underscore (`_spf.example.com`) are queried instead
+  of rejected with `protocol error: Label contains invalid character`.
+- A single resolver's invented TTL no longer skews the propagation gauge's
+  TTL advisory — outliers are flagged by name instead.
+- Malformed names are reported once at startup or in the gauge area instead
+  of filling the table with one identical error per resolver.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed
